@@ -1,0 +1,32 @@
+# Python-spezifische Dateien
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.flakes8
+.pytest_cache/
+
+# Virtuelle Umgebungen (Niemals mitpushen!)
+venv/
+.venv/
+env/
+ENV/
+
+# Secrets & Konfiguration (EXTREM WICHTIG)
+.env
+
+# Mac-spezifisches (Da du auf einem Mac arbeitest)
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE-spezifisch (Optional, aber sauber)
+.vscode/
+.idea/
+*.swp
