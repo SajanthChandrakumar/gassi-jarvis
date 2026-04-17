@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any
 from google import genai
 from dotenv import load_dotenv
 import base64
-from gtts import gTTS
+import edge_tts
 from fastapi.responses import FileResponse
 
 
@@ -67,24 +67,30 @@ async def chat_with_jarvis(request: JarvisRequest):
     chat_session = active_sessions[session_id]
     
     try:
-        #1. Nachricht an die KI schicken
+        # 1. Nachricht an die KI schicken
         response = chat_session.send_message(user_text)
 
-        #2. Text in Sprache umwandeln (Deutsch)
-        print("[LOG] Generiere Audio-Stream...")
-        tts = gTTS(text=response.text, lang='de')
+        # 2. Text in realistische Sprache umwandeln (Edge-TTS)
+        print("[LOG] Generiere Azure-Audio-Stream...")
+        
+        # 'de-DE-KillianNeural' männliche deutsche Stimme. 
+        communicate = edge_tts.Communicate(response.text, "de-DE-KillianNeural")
+        
+        # Wir sammeln die Audio-Chunks direkt im Arbeitsspeicher
+        audio_data = b""
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_data += chunk["data"]
 
-        #3. Audio in RAM speichern un din Base64 umwandeln
-        fp = io.BytesIO()
-        tts.write_to_fp(fp)
-        audio_b64 = base64.b64encode(fp.getvalue()).decode('utf-8')
+        # 3. Das gesammelte Audio in Base64 umwandeln
+        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
 
         return JarvisResponse(
             status="success",
             jarvis_response=response.text,
             audio_base64=audio_b64,
-            action_taken="gemini_api_call_with_audio"
+            action_taken="gemini_api_call_with_edge_tts"
         )
     except Exception as e:
-        print(f"[ERROR] API Call fehlgeschlagen: {e}")
-        raise HTTPException(status_code=500, detail="Brain connection lost.")
+        print(f"[ERROR] Interner Fehler: {e}") 
+        raise HTTPException(status_code=500, detail=f"Brain connection lost: {str(e)}")
