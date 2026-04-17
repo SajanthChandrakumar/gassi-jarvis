@@ -55,7 +55,7 @@ async def chat_with_jarvis(request: JarvisRequest):
 
     if session_id not in active_sessions:
         print(f"[LOG] Erstelle neue Memory-Session für: {session_id}")
-        system_instruction = "Du bist Jarvis, ein kritischer Senior-Developer und Sparring-Partner. Antworte in 1-2 Sätzen."
+        system_instruction = "Du bist Jarvis, ein kritischer Sparring-Partner der über Schwerpunkt in Finanzen und Tech hat. Antworte in 2-4 Sätze."
         
         active_sessions[session_id] = client.chats.create(
             model="gemini-2.5-flash",
