@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import base64
 import edge_tts
 from fastapi.responses import FileResponse
+from app.notion_service import save_protocol_to_notion
 
 
 # 1. API Setup & Authentifizierung
@@ -69,6 +70,13 @@ async def chat_with_jarvis(request: JarvisRequest):
     try:
         # 1. Nachricht an die KI schicken
         response = chat_session.send_message(user_text)
+
+        # 1.5 Notion-Trigger prüfen
+        # Wenn der User "protokoll", "notier" oder "speicher" sagt, legen wir es in Notion ab.
+        trigger_words = ["protokoll", "notier", "speicher", "festhalten"]
+        if any(word in user_text.lower() for word in trigger_words):
+            print("[LOG] Notion-Trigger erkannt! Speichere Protokoll...")
+            save_protocol_to_notion(user_text, response.text)
 
         # 2. Text in realistische Sprache umwandeln (Edge-TTS)
         print("[LOG] Generiere Azure-Audio-Stream...")
