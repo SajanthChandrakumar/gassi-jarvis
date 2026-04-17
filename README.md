@@ -3,11 +3,11 @@
 > **Vision:** Turning "dead time" during daily dog walks into high-performance strategy sessions. 
 > An autonomous, voice-controlled AI sparring partner for dynamic Q&A and strategic discussions.
 
-## 🎯 The "Unicorn" Purpose
+## 🎯 The Purpose
 This project is a technical showcase of a modern AI-agent architecture. It bridges the gap between raw LLM reasoning and professional software engineering standards.
 * **API Contract Design:** Strict JSON validation using Pydantic to ensure data integrity.
 * **Stateful AI Integration:** Custom in-memory session management to maintain context during 60-minute walk sessions.
-* **Modern Stack:** Built on the latest Google Gemini 2.5 infrastructure for high-speed reasoning.
+* **Modern Stack:** Built on the Google Gemini 2.5 (can also be changed to other Gemini models) infrastructure for high-speed reasoning.
 
 ## 🏗 System Architecture
 The project follows a decoupled 5-layer architecture. 
