@@ -1,10 +1,15 @@
 import os
+import io 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional, Dict, Any
 from google import genai
 from dotenv import load_dotenv
+import base64
+from gtts import gTTS
+from fastapi.responses import FileResponse
+
 
 # 1. API Setup & Authentifizierung
 load_dotenv()
@@ -31,7 +36,12 @@ class JarvisRequest(BaseModel):
 class JarvisResponse(BaseModel):
     status: str
     jarvis_response: str
+    audio_base64: Optional[str] = None
     action_taken: Optional[str] = None
+
+@app.get("/")
+async def get_index():
+    return FileResponse("index.html")
 
 @app.post("/api/chat", response_model=JarvisResponse)
 async def chat_with_jarvis(request: JarvisRequest):
@@ -57,11 +67,23 @@ async def chat_with_jarvis(request: JarvisRequest):
     chat_session = active_sessions[session_id]
     
     try:
+        #1. Nachricht an die KI schicken
         response = chat_session.send_message(user_text)
+
+        #2. Text in Sprache umwandeln (Deutsch)
+        print("[LOG] Generiere Audio-Stream...")
+        tts = gTTS(text=response.text, lang='de')
+
+        #3. Audio in RAM speichern un din Base64 umwandeln
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        audio_b64 = base64.b64encode(fp.getvalue()).decode('utf-8')
+
         return JarvisResponse(
             status="success",
             jarvis_response=response.text,
-            action_taken="gemini_api_call"
+            audio_base64=audio_b64,
+            action_taken="gemini_api_call_with_audio"
         )
     except Exception as e:
         print(f"[ERROR] API Call fehlgeschlagen: {e}")

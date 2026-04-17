@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Gassi-Jarvis Frontend</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #121212; color: white; }
+        button { padding: 20px 40px; font-size: 1.2rem; cursor: pointer; background: #00ffcc; border: none; border-radius: 10px; color: black; font-weight: bold; }
+        #log { margin-top: 20px; color: #888; }
+    </style>
+</head>
+<body>
+    <h1>Gassi-Jarvis</h1>
+    <button id="talkBtn">Mit Jarvis sprechen (Test)</button>
+    <p id="log">Warte auf Aktion...</p>
+
+    <script>
+        document.getElementById('talkBtn').addEventListener('click', async () => {
+            const log = document.getElementById('log');
+            log.innerText = "Jarvis denkt nach...";
+
+            const response = await fetch('/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: "web_test_1",
+                    timestamp: new Date().toISOString(),
+                    payload: { type: "text", content: "Hallo Jarvis, wie geht es dir heute?" }
+                })
+            });
+
+            const data = await response.json();
+            log.innerText = "Jarvis antwortet: " + data.jarvis_response;
+
+            if (data.audio_base64) {
+                // Den Buchstabensalat in ein Audio-Objekt verwandeln
+                const audio = new Audio("data:audio/mp3;base64," + data.audio_base64);
+                audio.play();
+            }
+        });
+    </script>
+</body>
+</html>
