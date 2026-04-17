@@ -58,24 +58,24 @@
 
                 try {
                     // Sende den erkannten Text an unser Backend
-            const response = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
+                    const response = await fetch('/api/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
                             session_id: "voice_walk_01",
-                    timestamp: new Date().toISOString(),
+                            timestamp: new Date().toISOString(),
                             payload: { type: "text", content: transcript }
-                })
-            });
+                        })
+                    });
 
-            const data = await response.json();
+                    const data = await response.json();
                     statusText.innerText = `Jarvis: "${data.jarvis_response}"`;
 
                     // Audio abspielen
-            if (data.audio_base64) {
-                const audio = new Audio("data:audio/mp3;base64," + data.audio_base64);
-                audio.play();
-            }
+                    if (data.audio_base64) {
+                        const audio = new Audio("data:audio/mp3;base64," + data.audio_base64);
+                        audio.play();
+                    }
                 } catch (error) {
                     statusText.innerText = "Fehler bei der Server-Verbindung.";
                 } finally {
