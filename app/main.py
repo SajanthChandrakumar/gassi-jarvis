@@ -55,7 +55,7 @@ class JarvisResponse(BaseModel):
 
 @app.get("/")
 async def get_index():
-    return FileResponse("index.html")
+   return FileResponse("app/static/index.html")
 
 @app.post("/api/chat", response_model=JarvisResponse)
 async def chat_with_jarvis(request: JarvisRequest):
