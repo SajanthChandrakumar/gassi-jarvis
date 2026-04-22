@@ -12,21 +12,20 @@ eggs/
 .flakes8
 .pytest_cache/
 
-# Virtuelle Umgebungen (Niemals mitpushen!)
+# Virtuelle Umgebungen
 venv/
 .venv/
 env/
 ENV/
 
-# Secrets & Konfiguration (EXTREM WICHTIG)
 .env
 
-# Mac-spezifisches (Da du auf einem Mac arbeitest)
+# Mac-spezifisches
 .DS_Store
 .AppleDouble
 .LSOverride
 
-# IDE-spezifisch (Optional, aber sauber)
+# IDE-spezifisch
 .vscode/
 .idea/
 *.swp

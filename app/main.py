@@ -1,33 +1,56 @@
 import os
 import io 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+import base64
+from datetime import datetime
+import edge_tts
 from datetime import datetime
 from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from google import genai
-from google.genai import types # WICHTIG: Für die Config und System-Instructions
+from google.genai import types
 from dotenv import load_dotenv
-import base64
-import edge_tts
 from fastapi.responses import FileResponse
+from ddgs import DDGS
 
 # 1. Den Service importieren
-from app.notion_service import save_protocol_to_notion
+from app.notion_service import save_protocol_to_notion, search_notion_memory
 
-# 2. Das Werkzeug (Tool) als Wrapper definieren
-def save_to_notion(content_to_save: str) -> str:
-    """
-    Speichert eine Information im Notion-Protokoll.
-    
-    Args:
-        content_to_save: Die zu speichernde Information. MUSS zwingend als saubere, professionelle 
-                         Zusammenfassung in Stichpunktform formuliert sein. Filtere jeglichen 
-                         Smalltalk heraus. Keine wörtliche Rede des Users kopieren.
-    """
-    print(f"[AGENT] Führe Tool aus: save_to_notion mit Inhalt:\n{content_to_save}")
-    success = save_protocol_to_notion("Jarvis (Auto-Notiz)", content_to_save)
-    return "Erfolgreich in Notion gespeichert" if success else "Fehler beim Speichern"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# 2. Die Werkzeuge (Tools) definieren
+def save_to_notion(title: str, content: str, category: str) -> str:
+    """Speichert eine strukturierte Notiz in Notion."""
+    print(f"[AGENT] Tool-Einsatz: {category} - {title}")
+    success = save_protocol_to_notion(title, content, category)
+    return f"Erfolgreich als {category} gespeichert." if success else "Fehler beim Speichern."
+
+def search_notion(query: str, category: str) -> str:
+    """Durchsucht das Notion-Gedächtnis nach alten Notizen, Ideen oder To-Dos."""
+    print(f"[AGENT] Gedächtnis-Scan: Kategorie='{category}', Query='{query}'")
+    return search_notion_memory(query, category)
+
+def web_search(query: str) -> str:
+    """
+    Durchsucht das Live-Internet nach aktuellen News, Kursen (Bitcoin, Aktien),
+    Wetter oder Fakten, die du nicht auswendig weißt.
+    """
+    print(f"[AGENT] Websuche gestartet: {query}")
+    try:
+        results = DDGS().text(query, max_results=3)
+        if not results:
+            return "Keine aktuellen Informationen im Internet gefunden."
+
+        formatted_results = []
+        for r in results:
+            formatted_results.append(f"- {r.get('title')}: {r.get('body')}")
+
+        return "Web-Ergebnisse:\n" + "\n".join(formatted_results)
+    except Exception as e:
+        print(f"[ERROR] Websuche fehlgeschlagen: {e}")
+        return f"Fehler bei der Websuche: {str(e)}"
+
+# 3. Server Setup
 load_dotenv()
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
@@ -53,50 +76,57 @@ class JarvisResponse(BaseModel):
     audio_base64: Optional[str] = None
     action_taken: Optional[str] = None
 
+# 4. Routen
 @app.get("/")
 async def get_index():
-   return FileResponse("app/static/index.html")
+    index_path = os.path.join(BASE_DIR, "static", "index.html")
+    if not os.path.exists(index_path):
+        return {"error": "index.html nicht im Ordner app/static gefunden!"}
+    return FileResponse(index_path)
 
 @app.post("/api/chat", response_model=JarvisResponse)
 async def chat_with_jarvis(request: JarvisRequest):
     user_text = request.payload.content.strip()
     session_id = request.session_id
     
-    if not user_text:
-        raise HTTPException(status_code=400, detail="Payload content darf nicht leer sein.")
-
-    print(f"[LOG] Session {session_id} sagt: {user_text}")
-
     if session_id not in active_sessions:
         print(f"[LOG] Erstelle neue AGENT-Session für: {session_id}")
         
-        # FIX: Hier war die Einrückung vorher verschoben
+        now = datetime.now()
+        aktuelles_datum = now.strftime("%A, der %d. %B %Y")
+        aktuelle_uhrzeit = now.strftime("%H:%M Uhr")
+
         system_instruction = (
-            "Du bist Jarvis, ein kritischer Sparring-Partner. "
-            "Du analysierst die Aussagen des Users scharf und präzise. "
-            "REGELN FÜR WERKZEUGE: Nutze 'save_to_notion' NUR, wenn eine echte Erkenntnis, "
-            "eine Idee oder ein To-Do vorliegt. Nutze es NICHT für Begrüßungen oder Smalltalk. "
-            "ANTWORT-STIL: Antworte maximal in 2-3 Sätzen. Wenn du etwas gespeichert hast, "
-            "bestätige es mit einem kurzen, trockenen Kommentar."
+            f"Du bist Jarvis, ein erfahrener Senior-Developer und Mentor. "
+            f"HEUTE IST: {aktuelles_datum}, es ist {aktuelle_uhrzeit}. "
+            "WERKZEUGE: "
+            "1. Nutze 'save_to_notion' für Wissen oder Ideen. "
+            "2. Nutze 'search_notion', wenn der User nach euren vergangenen Gesprächen fragt. "
+            "3. Nutze 'web_search' für aktuelle Daten, Kurse, Wetter oder Fakten aus dem echten Internet. "
+            "ANTWORT-REGELN: Sei direkt, professionell und erkläre Konzepte gut. Bestätige Werkzeug-Einsätze kurz."
         )
-        
-        # 3. Den Agenten mit seinen Werkzeugen instanziieren
+
         active_sessions[session_id] = client.chats.create(
-            model="gemini-2.0-flash", # Hinweis: Achte darauf, dass der Modellname korrekt ist (meist 2.0 statt 2.5)
+            model="gemini-2.5-flash",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                tools=[save_to_notion], # <-- Hier übergeben wir Jarvis seine Hände
-                temperature=0.4 # Niedrige Temperatur: ist präzise
+                tools=[save_to_notion, search_notion, web_search],
+                temperature=0.3
             )
         )
 
     chat_session = active_sessions[session_id]
     
+    current_history = chat_session.get_history()
+
+    if len(current_history) > 10:
+        print("[LOG] Token-Hygiene aktiv: Schneide alten Kontext ab.")
+        chat_session._history = current_history[-4:]
+
     try:
-        # 4. Magie: Das SDK prüft jetzt automatisch, ob das Tool aufgerufen werden muss
         response = chat_session.send_message(user_text)
 
-        print("[LOG] Generiere Azure-Audio-Stream...")
+        print("[LOG] Generiere Audio-Stream...")
         communicate = edge_tts.Communicate(response.text, "de-DE-KillianNeural")
         
         audio_data = b""
