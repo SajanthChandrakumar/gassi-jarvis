@@ -1,0 +1,3 @@
+## 2024-05-14 - Interactive Icon Buttons & Status Regions Accessibility
+**Learning:** Icon-only buttons (like the microphone button) completely lack context for screen reader users without an `aria-label`. Additionally, dynamically updated status text (like "Ich höre zu..." or "Jarvis denkt nach...") is not announced to assistive technologies unless wrapped in an element with `aria-live` attribute.
+**Action:** Always add `aria-label` (and optionally `title` for visual hover tooltip) to interactive icon-only elements. Always apply `aria-live="polite"` (or `"assertive"`) to text areas that update dynamically based on user interaction or system state, ensuring blind users get the same real-time feedback as sighted users.
