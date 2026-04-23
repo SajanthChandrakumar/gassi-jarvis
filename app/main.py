@@ -8,7 +8,7 @@ from typing import Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from google import genai
-from google.genai import types
+from google.genai import types 
 from dotenv import load_dotenv
 from fastapi.responses import FileResponse
 from ddgs import DDGS
@@ -32,7 +32,7 @@ def search_notion(query: str, category: str) -> str:
 
 def web_search(query: str) -> str:
     """
-    Durchsucht das Live-Internet nach aktuellen News, Kursen (Bitcoin, Aktien),
+    Durchsucht das Live-Internet nach aktuellen News, Kursen (Bitcoin, Aktien), 
     Wetter oder Fakten, die du nicht auswendig weißt.
     """
     print(f"[AGENT] Websuche gestartet: {query}")
@@ -40,11 +40,11 @@ def web_search(query: str) -> str:
         results = DDGS().text(query, max_results=3)
         if not results:
             return "Keine aktuellen Informationen im Internet gefunden."
-
+        
         formatted_results = []
         for r in results:
             formatted_results.append(f"- {r.get('title')}: {r.get('body')}")
-
+            
         return "Web-Ergebnisse:\n" + "\n".join(formatted_results)
     except Exception as e:
         print(f"[ERROR] Websuche fehlgeschlagen: {e}")
@@ -110,18 +110,18 @@ async def chat_with_jarvis(request: JarvisRequest):
             model="gemini-2.5-flash",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                tools=[save_to_notion, search_notion, web_search],
+                tools=[save_to_notion, search_notion, web_search], 
                 temperature=0.3
             )
         )
-
+   
     chat_session = active_sessions[session_id]
     
     current_history = chat_session.get_history()
-
+    
     if len(current_history) > 10:
         print("[LOG] Token-Hygiene aktiv: Schneide alten Kontext ab.")
-        chat_session._history = current_history[-4:]
+        chat_session._history = current_history[-4:] 
 
     try:
         response = chat_session.send_message(user_text)

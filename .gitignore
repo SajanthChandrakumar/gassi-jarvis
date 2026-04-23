@@ -12,7 +12,7 @@ eggs/
 .flakes8
 .pytest_cache/
 
-# Virtuelle Umgebungen
+# Virtuelle Umgebungen 
 venv/
 .venv/
 env/
@@ -25,7 +25,7 @@ ENV/
 .AppleDouble
 .LSOverride
 
-# IDE-spezifisch
+# IDE-spezifisch 
 .vscode/
 .idea/
 *.swp
