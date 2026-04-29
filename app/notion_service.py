@@ -1,32 +1,12 @@
 import os
+import requests # <-- NEU: Unser direkter HTTP-Client
+from datetime import datetime
 from notion_client import Client
 from dotenv import load_dotenv
 
 load_dotenv()
 notion = Client(auth=os.getenv("NOTION_API_KEY"))
 database_id = os.getenv("NOTION_PAGE_ID")
-
-def web_search(query: str) -> str:
-    """
-    Durchsucht das Live-Internet nach aktuellen News, Kursen (Bitcoin, Aktien), 
-    Wetter oder Fakten, die du nicht auswendig weißt.
-    Nutze dies IMMER, bevor du sagst, dass du etwas nicht weißt!
-    """
-    print(f"[AGENT] Websuche gestartet: {query}")
-    try:
-        results = DDGS().text(query, max_results=3)
-        if not results:
-            return "Keine aktuellen Informationen im Internet gefunden."
-        
-        # Wir formatieren die Top 3 Ergebnisse als sauberen Text für Jarvis
-        formatted_results = []
-        for r in results:
-            formatted_results.append(f"- {r.get('title')}: {r.get('body')}")
-            
-        return "Web-Ergebnisse:\n" + "\n".join(formatted_results)
-    except Exception as e:
-        print(f"[ERROR] Websuche fehlgeschlagen: {e}")
-        return f"Fehler bei der Websuche: {str(e)}"
 
 def save_protocol_to_notion(title: str, content: str, category: str) -> bool:
     """
@@ -37,21 +17,20 @@ def save_protocol_to_notion(title: str, content: str, category: str) -> bool:
             print("[WARN] Notion Page ID fehlt!")
             return False
 
+        heute_iso = datetime.now().isoformat()
+
         notion.pages.create(
             parent={"database_id": database_id},
             properties={
                 "Name": {
                     "title": [{"text": {"content": title}}]
                 }, 
-                
                 "Kategorie": {
                     "multi_select": [{"name": category}]
                 }, 
-                
                 "Inhalt": {
                     "rich_text": [{"text": {"content": content}}]
                 }, 
-                
                 "Date": {
                     "date": {"start": heute_iso}
                 }
@@ -65,54 +44,69 @@ def save_protocol_to_notion(title: str, content: str, category: str) -> bool:
 
 def search_notion_memory(query_text: str = "", category: str = "") -> str:
     """
-    Durchsucht die Notion-Datenbank nach einem Suchbegriff und/oder Kategorie.
+    Durchsucht die Notion-Datenbank. Holt immer die neuesten Einträge zuerst.
     """
     try:
         if not database_id:
             return "Fehler: Notion Page ID fehlt!"
 
+        api_key = os.getenv("NOTION_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "Notion-Version": "2022-06-28"
+        }
+        
+        url = f"https://api.notion.com/v1/databases/{database_id}/query"
+        
+        # 1. Die Sortierung (Immer das Neueste zuerst!)
+        payload = {
+            "sorts": [{"timestamp": "created_time", "direction": "descending"}]
+        }
+
+        # 2. Die Filter (nur hinzufügen, wenn Jarvis wirklich was sucht)
         filters = {"and": []}
-        
         if query_text:
-            filters["and"].append({
-                "property": "Inhalt",
-                "rich_text": {"contains": query_text}
-            })
-            
-        # FIX 2: Auch die Suchanfrage muss auf multi_select angepasst werden
+            filters["and"].append({"property": "Inhalt", "rich_text": {"contains": query_text}})
         if category:
-            filters["and"].append({
-                "property": "Kategorie",
-                "multi_select": {"contains": category}
-            })
+            filters["and"].append({"property": "Kategorie", "multi_select": {"contains": category}})
 
-        if not filters["and"]:
-            return "Fehler: Es muss ein Suchbegriff oder eine Kategorie übergeben werden."
+        if filters["and"]:
+            payload["filter"] = filters
 
-        # Durch den Downgrade auf Version 2.x funktioniert dieser Befehl wieder!
-        results = notion.databases.query(database_id=database_id, filter=filters)
+        # API Request abfeuern
+        response = requests.post(url, headers=headers, json=payload)
         
-        if not results["results"]:
-            return "Keine passenden Einträge in Notion gefunden."
+        if response.status_code != 200:
+            print(f"[ERROR] Raw API Fehler: {response.text}")
+            return f"Fehler bei der Datenbank-Suche: Code {response.status_code}"
 
+        results = response.json()
+        
+        if not results.get("results"):
+            return "Das Gedächtnis ist leer oder es wurde nichts Passendes gefunden."
+
+        # Token sparen: Wir holen nur die letzten 3 Einträge
         formatted_results = []
-        for page in results["results"]:
-            title_prop = page["properties"].get("Name", {}).get("title", [])
+        for page in results["results"][:3]: 
+            props = page.get("properties", {})
+            
+            title_prop = props.get("Name", {}).get("title", [])
             title = title_prop[0]["text"]["content"] if title_prop else "Ohne Titel"
             
-            content_prop = page["properties"].get("Inhalt", {}).get("rich_text", [])
+            content_prop = props.get("Inhalt", {}).get("rich_text", [])
             content = content_prop[0]["text"]["content"] if content_prop else ""
             
-            # FIX 3: Auslesen als Liste
-            cat_prop = page["properties"].get("Kategorie", {}).get("multi_select", [])
+            cat_prop = props.get("Kategorie", {}).get("multi_select", [])
             cat = cat_prop[0].get("name", "Keine") if cat_prop else "Keine"
             
             formatted_results.append(f"- [{cat}] {title}: {content}")
 
-        return "Gefundene Notizen:\n" + "\n".join(formatted_results)
+        return "Hier sind die neuesten/passenden Notizen aus deinem Gedächtnis:\n" + "\n".join(formatted_results)
 
     except Exception as e:
-        print(f"[ERROR] Notion Search API Fehler: {e}")
+        print(f"[ERROR] Eigener Search API Fehler: {e}")
         return f"Fehler bei der Datenbank-Suche: {str(e)}"
-    
-    
+    except Exception as e:
+        print(f"[ERROR] Eigener Search API Fehler: {e}")
+        return f"Fehler bei der Datenbank-Suche: {str(e)}"

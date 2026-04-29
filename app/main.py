@@ -1,7 +1,6 @@
 import os
 import io 
 import base64
-from datetime import datetime
 import edge_tts
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -12,6 +11,7 @@ from google.genai import types
 from dotenv import load_dotenv
 from fastapi.responses import FileResponse
 from ddgs import DDGS
+from app.memory import save_memory, recall_memory, get_memory_stats
 
 # 1. Den Service importieren
 from app.notion_service import save_protocol_to_notion, search_notion_memory
@@ -25,8 +25,14 @@ def save_to_notion(title: str, content: str, category: str) -> str:
     success = save_protocol_to_notion(title, content, category)
     return f"Erfolgreich als {category} gespeichert." if success else "Fehler beim Speichern."
 
-def search_notion(query: str, category: str) -> str:
-    """Durchsucht das Notion-Gedächtnis nach alten Notizen, Ideen oder To-Dos."""
+def search_notion(query: str, category: str = "") -> str:
+    """
+    Durchsucht das Notion-Gedächtnis nach alten Notizen.
+    STRIKTE REGELN FÜR DIE SUCHE:
+    1. Lass 'category' IMMER ZWINGEND LEER (""), erfinde keine Kategorien!
+    2. Nutze NUR das Feld 'query', um nach dem Stichwort (z.B. 'Octopus' oder 'Finanzen') zu suchen.
+    3. Wenn der User nach der 'letzten Notiz' oder 'Neuesten' fragt, lass BEIDE Felder ("") komplett leer!
+    """
     print(f"[AGENT] Gedächtnis-Scan: Kategorie='{category}', Query='{query}'")
     return search_notion_memory(query, category)
 
@@ -97,24 +103,25 @@ async def chat_with_jarvis(request: JarvisRequest):
         aktuelle_uhrzeit = now.strftime("%H:%M Uhr")
 
         system_instruction = (
-            f"Du bist Jarvis, ein erfahrener Senior-Developer und Mentor. "
-            f"HEUTE IST: {aktuelles_datum}, es ist {aktuelle_uhrzeit}. "
-            "WERKZEUGE: "
-            "1. Nutze 'save_to_notion' für Wissen oder Ideen. "
-            "2. Nutze 'search_notion', wenn der User nach euren vergangenen Gesprächen fragt. "
-            "3. Nutze 'web_search' für aktuelle Daten, Kurse, Wetter oder Fakten aus dem echten Internet. "
-            "ANTWORT-REGELN: Sei direkt, professionell und erkläre Konzepte gut. Bestätige Werkzeug-Einsätze kurz."
+            f"Du bist Jarvis, ein hochintelligenter Senior-Developer und Mentor. "
+            f"HEUTE IST: {aktuelles_datum}, es ist {aktuelle_uhrzeit}. AKZEPTIERE DIESES DATUM ALS DEINE ABSOLUTE GEGENWART. "
+            "REGELN FÜR WERKZEUGE (STRIKTE HIERARCHIE): "
+            "1. VERTRAUE DEINEM GEHIRN: Beantworte allgemeine Wissensfragen oder Code-Probleme IMMER aus deinem eigenen Wissen. "
+            "2. DEIN UNTERBEWUSSTES LANGZEITGEDÄCHTNIS (ChromaDB): Nutze IMMER 'save_memory', wenn der User dir persönliche Fakten, Vorlieben oder Infos über sich erzählt. Nutze IMMER 'recall_memory', um dich an diese Fakten oder vergangene Gespräche zu erinnern!Nutze 'get_memory_stats', wenn der User wissen möchte, wie viel du dir bereits gemerkt hast oder wie groß dein Gedächtnis ist. "
+            "3. DEIN NOTIZBUCH (Notion): Nutze 'save_to_notion' und 'search_notion' NUR, wenn der User explizit verlangt, dass du ein Protokoll, eine Notiz oder ein Dokument in Notion anlegst oder suchst. "
+            "4. DIE WEBSUCHE: Nutze 'web_search' AUSSCHLIESSLICH für echte Live-Daten (Wetter, Aktien) oder brandaktuelle News. "
+            "ANTWORT-STIL: Sei präzise, professionell, kritisch und erkläre komplexe Dinge exzellent ohne lange Vorreden."
         )
 
         active_sessions[session_id] = client.chats.create(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-flash-lite",
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
-                tools=[save_to_notion, search_notion, web_search], 
+                tools=[save_to_notion, search_notion, web_search, save_memory, 
+                recall_memory, get_memory_stats], 
                 temperature=0.3
             )
         )
-   
     chat_session = active_sessions[session_id]
     
     current_history = chat_session.get_history()
@@ -126,9 +133,11 @@ async def chat_with_jarvis(request: JarvisRequest):
     try:
         response = chat_session.send_message(user_text)
 
+        audio_text = response.text.replace("*", "").replace("- ", " ")
+
         print("[LOG] Generiere Audio-Stream...")
-        communicate = edge_tts.Communicate(response.text, "de-DE-KillianNeural")
-        
+
+        communicate = edge_tts.Communicate(audio_text.text, "de-DE-KillianNeural")
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
