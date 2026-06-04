@@ -15,6 +15,7 @@ graph TD
         
         MAIN -->|Step 3a: open_app| OSASCRIPT["osascript<br/>(AppleScript Execution)"]
         MAIN -->|Step 3b: shell_command| SECURITY["security.py<br/>(Zero-Trust Security Router)"]
+        MAIN -->|Step 3c: take_screenshot| VISION["vision.py<br/>(macOS Screencapture)"]
         
         SECURITY -->|Level 0-1: Safe| EXEC["subprocess.run()"]
         SECURITY -->|Level 2: Danger| MEMORY
@@ -39,6 +40,7 @@ graph TD
 | **`agent.py`** | **LLM Orchestrator** | Handles all Google Gemini integrations. Declares tools (`mac_controller_tool`), generates responses, and acts as an NLP intent classifier (APPROVE/DENY/UNCLEAR). |
 | **`security.py`** | **Zero-Trust Router** | Evaluates shell commands via `evaluate_security_level`. Sandboxes execution via `subprocess.run()`. |
 | **`notion_service.py`**| **Knowledge Base** | Direct integration with the Notion API to save formal protocols and search old notes. |
+| **`vision.py`** | **Vision Module** | Executes macOS `screencapture`, drops alpha channels, and compresses images via Pillow for API latency reduction. |
 
 ---
 

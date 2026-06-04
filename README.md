@@ -25,6 +25,7 @@ The project follows a decoupled microservice architecture:
 3. **Session & RAG (`memory.py`)**: Local ChromaDB vector database and session state management.
 4. **Security Router (`security.py`)**: Threat-level classification for sandboxed shell execution.
 5. **Knowledge Base (`notion_service.py`)**: External Notion API integration.
+6. **Vision Module (`vision.py`)**: macOS desktop screenshot capture and Pillow-based image compression for multimodal visual analysis.
 
 For a deep dive, see the [Architecture Documentation](architecture.md).
 
@@ -128,6 +129,7 @@ All communication happens via the `/api/chat` endpoint.
 - [x] Phase 4: Notion API Integration for automated strategy protocols  
 - [x] Phase 5: Persistent Long-Term Memory via local ChromaDB (RAG Pipeline)  
 - [x] Phase 6: Refactor backend into Microservices and implement Zero-Trust HitL Security Router for macOS execution (LAM)
+- [x] Phase 7: Project Argus - Multimodal Vision capabilities (macOS screenshots & Gemini Vision integration)
 
 ---
 
