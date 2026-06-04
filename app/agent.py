@@ -64,7 +64,18 @@ mac_controller_tool = types.Tool(
     ]
 )
 
-# ─── System Prompt ────────────────────────────────────────────────────────────
+take_screenshot_tool = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="take_screenshot",
+            description=(
+                "Macht einen Screenshot vom aktuellen Bildschirm des Users. "
+                "Nutze dies IMMER, wenn der User dich bittet, sich etwas auf seinem "
+                "Bildschirm anzusehen, Code zu prüfen oder visuelle Fragen zu beantworten."
+            )
+        )
+    ]
+)
 
 
 def _build_system_prompt() -> str:
@@ -118,7 +129,7 @@ def get_gemini_response(user_text: str) -> types.GenerateContentResponse:
         contents=user_text,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
-            tools=[mac_controller_tool, save_memory, recall_memory, get_memory_stats],
+            tools=[mac_controller_tool, take_screenshot_tool, save_memory, recall_memory, get_memory_stats],
             temperature=0.1,
         ),
     )
