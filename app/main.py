@@ -1,156 +1,310 @@
-import os
-import io 
-import base64
-import edge_tts
-from datetime import datetime
-from typing import Optional, Dict, Any
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from google import genai
-from google.genai import types 
-from dotenv import load_dotenv
-from fastapi.responses import FileResponse
-from ddgs import DDGS
-from app.memory import save_memory, recall_memory, get_memory_stats
+"""
+Gassi-Jarvis — FastAPI Gateway (Layer 2: Route Controller)
 
-# 1. Den Service importieren
-from app.notion_service import save_protocol_to_notion, search_notion_memory
+This is the single entry point for all client requests.
+It orchestrates the full request lifecycle:
+
+    1. HitL Interceptor — Check for pending dangerous commands awaiting approval.
+    2. LLM Call         — Send user text to Gemini via the agent module.
+    3. Tool Executor    — Handle function calls (open_app / shell_command).
+    4. Text Passthrough — Return plain LLM responses when no tools are triggered.
+
+All business logic is delegated to the respective microservice modules:
+    - models.py   → Pydantic validation
+    - memory.py   → Session state + ChromaDB
+    - agent.py    → Gemini LLM + tool declarations
+    - security.py → Command threat classification + subprocess execution
+"""
+
+import os
+import subprocess
+import base64
+
+import edge_tts
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+
+from app.models import ChatRequest
+from app.memory import get_session, clear_pending_command
+from app.agent import get_gemini_response, analyze_user_intent
+from app.security import evaluate_security_level, execute_shell_command
+
+# ─── Server Setup ─────────────────────────────────────────────────────────────
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 2. Die Werkzeuge (Tools) definieren
-def save_to_notion(title: str, content: str, category: str) -> str:
-    """Speichert eine strukturierte Notiz in Notion."""
-    print(f"[AGENT] Tool-Einsatz: {category} - {title}")
-    success = save_protocol_to_notion(title, content, category)
-    return f"Erfolgreich als {category} gespeichert." if success else "Fehler beim Speichern."
+app = FastAPI(
+    title="Gassi-Jarvis Gateway",
+    description="Voice-controlled AI Assistant & LAM — FastAPI Backend",
+    version="2.0.0",
+)
 
-def search_notion(query: str, category: str = "") -> str:
+TTS_VOICE = "de-DE-KillianNeural"
+
+
+# ─── Helper: Text-to-Speech ──────────────────────────────────────────────────
+
+
+async def _generate_tts_audio(text: str) -> str:
     """
-    Durchsucht das Notion-Gedächtnis nach alten Notizen.
-    STRIKTE REGELN FÜR DIE SUCHE:
-    1. Lass 'category' IMMER ZWINGEND LEER (""), erfinde keine Kategorien!
-    2. Nutze NUR das Feld 'query', um nach dem Stichwort (z.B. 'Octopus' oder 'Finanzen') zu suchen.
-    3. Wenn der User nach der 'letzten Notiz' oder 'Neuesten' fragt, lass BEIDE Felder ("") komplett leer!
+    Generate base64-encoded MP3 audio from text using Edge-TTS.
+
+    Args:
+        text: The text to synthesize (Markdown artifacts are stripped).
+
+    Returns:
+        Base64-encoded audio string, or empty string on failure.
     """
-    print(f"[AGENT] Gedächtnis-Scan: Kategorie='{category}', Query='{query}'")
-    return search_notion_memory(query, category)
-
-def web_search(query: str) -> str:
-    """
-    Durchsucht das Live-Internet nach aktuellen News, Kursen (Bitcoin, Aktien), 
-    Wetter oder Fakten, die du nicht auswendig weißt.
-    """
-    print(f"[AGENT] Websuche gestartet: {query}")
-    try:
-        results = DDGS().text(query, max_results=3)
-        if not results:
-            return "Keine aktuellen Informationen im Internet gefunden."
-        
-        formatted_results = []
-        for r in results:
-            formatted_results.append(f"- {r.get('title')}: {r.get('body')}")
-            
-        return "Web-Ergebnisse:\n" + "\n".join(formatted_results)
-    except Exception as e:
-        print(f"[ERROR] Websuche fehlgeschlagen: {e}")
-        return f"Fehler bei der Websuche: {str(e)}"
-
-# 3. Server Setup
-load_dotenv()
-api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
-    raise ValueError("Kein GOOGLE_API_KEY in der .env gefunden!")
-
-client = genai.Client(api_key=api_key)
-app = FastAPI(title="Gassi-Jarvis Gateway")
-
-active_sessions: Dict[str, Any] = {}
-
-class Payload(BaseModel):
-    type: str
-    content: str
-
-class JarvisRequest(BaseModel):
-    session_id: str
-    timestamp: datetime
-    payload: Payload
-
-class JarvisResponse(BaseModel):
-    status: str
-    jarvis_response: str
-    audio_base64: Optional[str] = None
-    action_taken: Optional[str] = None
-
-# 4. Routen
-@app.get("/")
-async def get_index():
-    index_path = os.path.join(BASE_DIR, "static", "index.html")
-    if not os.path.exists(index_path):
-        return {"error": "index.html nicht im Ordner app/static gefunden!"}
-    return FileResponse(index_path)
-
-@app.post("/api/chat", response_model=JarvisResponse)
-async def chat_with_jarvis(request: JarvisRequest):
-    user_text = request.payload.content.strip()
-    session_id = request.session_id
-    
-    if session_id not in active_sessions:
-        print(f"[LOG] Erstelle neue AGENT-Session für: {session_id}")
-        
-        now = datetime.now()
-        aktuelles_datum = now.strftime("%A, der %d. %B %Y")
-        aktuelle_uhrzeit = now.strftime("%H:%M Uhr")
-
-        system_instruction = (
-            f"Du bist Jarvis, ein hochintelligenter Senior-Developer und Mentor. "
-            f"HEUTE IST: {aktuelles_datum}, es ist {aktuelle_uhrzeit}. AKZEPTIERE DIESES DATUM ALS DEINE ABSOLUTE GEGENWART. "
-            "REGELN FÜR WERKZEUGE (STRIKTE HIERARCHIE): "
-            "1. VERTRAUE DEINEM GEHIRN: Beantworte allgemeine Wissensfragen oder Code-Probleme IMMER aus deinem eigenen Wissen. "
-            "2. DEIN UNTERBEWUSSTES LANGZEITGEDÄCHTNIS (ChromaDB): Nutze IMMER 'save_memory', wenn der User dir persönliche Fakten, Vorlieben oder Infos über sich erzählt. Nutze IMMER 'recall_memory', um dich an diese Fakten oder vergangene Gespräche zu erinnern!Nutze 'get_memory_stats', wenn der User wissen möchte, wie viel du dir bereits gemerkt hast oder wie groß dein Gedächtnis ist. "
-            "3. DEIN NOTIZBUCH (Notion): Nutze 'save_to_notion' und 'search_notion' NUR, wenn der User explizit verlangt, dass du ein Protokoll, eine Notiz oder ein Dokument in Notion anlegst oder suchst. "
-            "4. DIE WEBSUCHE: Nutze 'web_search' AUSSCHLIESSLICH für echte Live-Daten (Wetter, Aktien) oder brandaktuelle News. "
-            "ANTWORT-STIL: Sei präzise, professionell, kritisch und erkläre komplexe Dinge exzellent ohne lange Vorreden."
-        )
-
-        active_sessions[session_id] = client.chats.create(
-            model="gemini-2.5-flash-lite",
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                tools=[save_to_notion, search_notion, web_search, save_memory, 
-                recall_memory, get_memory_stats], 
-                temperature=0.3
-            )
-        )
-    chat_session = active_sessions[session_id]
-    
-    current_history = chat_session.get_history()
-    
-    if len(current_history) > 10:
-        print("[LOG] Token-Hygiene aktiv: Schneide alten Kontext ab.")
-        chat_session._history = current_history[-4:] 
+    # Strip Markdown artifacts that TTS would read aloud
+    clean_text = text.replace("*", "").replace("#", "").replace("- ", " ")
 
     try:
-        response = chat_session.send_message(user_text)
-
-        audio_text = response.text.replace("*", "").replace("- ", " ")
-
-        print("[LOG] Generiere Audio-Stream...")
-
-        communicate = edge_tts.Communicate(audio_text.text, "de-DE-KillianNeural")
+        communicate = edge_tts.Communicate(clean_text, TTS_VOICE)
         audio_data = b""
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio_data += chunk["data"]
 
-        audio_b64 = base64.b64encode(audio_data).decode('utf-8')
+        return base64.b64encode(audio_data).decode("utf-8")
 
-        return JarvisResponse(
-            status="success",
-            jarvis_response=response.text,
-            audio_base64=audio_b64,
-            action_taken="agent_call_completed"
-        )
     except Exception as e:
-        print(f"[ERROR] Interner Fehler: {e}") 
-        raise HTTPException(status_code=500, detail=f"Brain connection lost: {str(e)}")
+        print(f"[TTS] Audio-Generierung fehlgeschlagen: {e}")
+        return ""
+
+
+# ─── Helper: Build JSON Response ─────────────────────────────────────────────
+
+
+async def _build_response(
+    text: str,
+    action: str = "none",
+    generate_audio: bool = True,
+) -> dict:
+    """
+    Build the standard JSON response dict with optional TTS audio.
+
+    Args:
+        text: Jarvis' text response.
+        action: Description of the action taken.
+        generate_audio: Whether to generate TTS audio.
+
+    Returns:
+        Dict matching the API response contract.
+    """
+    audio_b64 = await _generate_tts_audio(text) if generate_audio else ""
+
+    return {
+        "status": "success",
+        "jarvis_response": text,
+        "audio_base64": audio_b64,
+        "action_taken": action,
+    }
+
+
+# ─── Routes ───────────────────────────────────────────────────────────────────
+
+
+@app.get("/")
+async def get_index():
+    """Serve the frontend PWA."""
+    index_path = os.path.join(BASE_DIR, "static", "index.html")
+    if not os.path.exists(index_path):
+        return {"error": "index.html nicht im Ordner app/static gefunden!"}
+    return FileResponse(index_path)
+
+
+@app.post("/api/chat")
+async def chat_with_jarvis(request: ChatRequest):
+    """
+    Main chat endpoint implementing the full Jarvis request lifecycle.
+
+    Flow:
+        Step 1 — HitL Interceptor: If a dangerous command is pending,
+                 classify user intent (APPROVE / DENY / UNCLEAR).
+        Step 2 — LLM Call: Send user text to Gemini.
+        Step 3 — Tool Executor: Handle function_calls from Gemini.
+        Step 4 — Text Passthrough: Return plain text if no tools fired.
+    """
+    user_text = request.payload.content.strip()
+    session_id = request.session_id
+    session = get_session(session_id)
+
+    try:
+        # ──────────────────────────────────────────────────────────────────
+        # STEP 1: HitL Interceptor — Check for pending dangerous commands
+        # ──────────────────────────────────────────────────────────────────
+        if session["pending_command"] is not None:
+            pending_cmd = session["pending_command"]
+            print(f"[HitL] Ausstehender Befehl: '{pending_cmd}' — Analysiere Antwort...")
+
+            intent = analyze_user_intent(user_text, pending_cmd)
+            print(f"[HitL] Intent-Klassifikation: {intent}")
+
+            if intent == "APPROVE":
+                # User hat zugestimmt → Befehl mit force=True ausführen
+                output = execute_shell_command(pending_cmd, force=True)
+                clear_pending_command(session_id)
+
+                response_text = (
+                    f"Verstanden. Befehl wird ausgeführt.\n\n"
+                    f"Ergebnis:\n{output}"
+                )
+                return await _build_response(
+                    text=response_text,
+                    action=f"hitl_approved: {pending_cmd}",
+                )
+
+            elif intent == "DENY":
+                # User hat abgelehnt → Befehl verwerfen
+                clear_pending_command(session_id)
+                return await _build_response(
+                    text="Alles klar. Befehl wurde abgebrochen. Ich führe nichts aus.",
+                    action="hitl_denied",
+                )
+
+            else:
+                # Intent unklar → nochmal nachfragen
+                return await _build_response(
+                    text=(
+                        f"Ich konnte deine Antwort nicht eindeutig zuordnen. "
+                        f"Der ausstehende Befehl ist: '{pending_cmd}'. "
+                        f"Sag bitte klar 'Ja, mach das' oder 'Nein, abbrechen'."
+                    ),
+                    action="hitl_unclear",
+                )
+
+        # ──────────────────────────────────────────────────────────────────
+        # STEP 2: LLM Call — Send to Gemini
+        # ──────────────────────────────────────────────────────────────────
+        print(f"[MAIN] User-Input an Gemini: '{user_text}'")
+
+        try:
+            response = get_gemini_response(user_text)
+        except Exception as e:
+            error_str = str(e)
+            print(f"[ERROR] Gemini API-Fehler: {error_str}")
+
+            # Handle Google overload (503) / quota limits gracefully
+            if "503" in error_str or "demand" in error_str or "quota" in error_str.lower():
+                fallback_text = (
+                    "Meine Serververbindung zu Google ist gerade überlastet. "
+                    "Lass uns kurz eine Minute warten."
+                )
+                return await _build_response(
+                    text=fallback_text,
+                    action="api_rate_limit_handled",
+                )
+
+            raise HTTPException(
+                status_code=500,
+                detail=f"Brain connection lost: {error_str}",
+            )
+
+        # ──────────────────────────────────────────────────────────────────
+        # STEP 3: Tool Executor — Handle function calls from Gemini
+        # ──────────────────────────────────────────────────────────────────
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.function_call:
+                    fc = part.function_call
+                    print(f"[TOOL] Function Call erkannt: {fc.name} → {fc.args}")
+
+                    if fc.name == "execute_mac_command":
+                        action_type = fc.args.get("action_type", "")
+                        payload = fc.args.get("payload", "")
+
+                        # ── 3a: open_app → Direct execution via osascript ──
+                        if action_type == "open_app":
+                            try:
+                                subprocess.run(
+                                    [
+                                        "osascript",
+                                        "-e",
+                                        f'tell application "{payload}" to activate',
+                                    ],
+                                    capture_output=True,
+                                    text=True,
+                                    timeout=10,
+                                )
+                                response_text = f"Erledigt. {payload} wurde geöffnet."
+                                return await _build_response(
+                                    text=response_text,
+                                    action=f"open_app: {payload}",
+                                )
+                            except subprocess.TimeoutExpired:
+                                return await _build_response(
+                                    text=f"Timeout beim Öffnen von {payload}.",
+                                    action="open_app_timeout",
+                                )
+                            except OSError as e:
+                                return await _build_response(
+                                    text=f"Fehler beim Öffnen von {payload}: {e}",
+                                    action="open_app_error",
+                                )
+
+                        # ── 3b: shell_command → Security router ────────────
+                        elif action_type == "shell_command":
+                            threat_level = evaluate_security_level(payload)
+                            print(
+                                f"[SECURITY] Befehl: '{payload}' → "
+                                f"Threat Level: {threat_level}"
+                            )
+
+                            if threat_level >= 2:
+                                # DANGEROUS: Save to pending state, ask for permission
+                                session["pending_command"] = payload
+                                session["pending_action_type"] = action_type
+
+                                warning_text = (
+                                    f"Achtung! Der Befehl '{payload}' wurde als "
+                                    f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
+                                    f"Soll ich ihn trotzdem ausführen? "
+                                    f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
+                                )
+                                return await _build_response(
+                                    text=warning_text,
+                                    action=f"hitl_pending: {payload}",
+                                )
+                            else:
+                                # SAFE: Execute immediately
+                                output = execute_shell_command(payload)
+                                response_text = (
+                                    f"Befehl ausgeführt.\n\nErgebnis:\n{output}"
+                                )
+                                return await _build_response(
+                                    text=response_text,
+                                    action=f"shell_executed: {payload}",
+                                )
+
+                        else:
+                            return await _build_response(
+                                text=f"Unbekannter Aktionstyp: {action_type}",
+                                action="unknown_action_type",
+                            )
+
+                    # Handle memory tools that Gemini called automatically
+                    elif fc.name in ("save_memory", "recall_memory", "get_memory_stats"):
+                        # These are handled internally by the genai SDK
+                        # when using automatic function calling.
+                        # If we reach here, the response.text should contain
+                        # the final answer after tool execution.
+                        pass
+
+        # ──────────────────────────────────────────────────────────────────
+        # STEP 4: Text Passthrough — No function calls, return LLM text
+        # ──────────────────────────────────────────────────────────────────
+        response_text = response.text if response.text else "Ich konnte leider keine Antwort generieren."
+        return await _build_response(
+            text=response_text,
+            action="text_response",
+        )
+
+    except HTTPException:
+        # Re-raise FastAPI HTTP exceptions as-is
+        raise
+    except Exception as e:
+        print(f"[FATAL] Unbehandelter Fehler im Chat-Endpoint: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Interner Serverfehler: {str(e)}",
+        )

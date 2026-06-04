@@ -29,3 +29,6 @@ ENV/
 .vscode/
 .idea/
 *.swp
+
+# Lokale Datenbank
+jarvis_brain/

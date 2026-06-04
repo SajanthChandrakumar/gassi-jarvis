@@ -172,6 +172,11 @@
         </button>
     </div>
 
+    <div id="chatContainer" style="margin-top: 20px; display: flex; gap: 10px; justify-content: center; width: 100%; max-width: 400px; margin-left: auto; margin-right: auto;">
+        <input type="text" id="textInput" placeholder="Tippe eine Nachricht..." style="flex-grow: 1; padding: 12px; border-radius: 8px; border: 1px solid var(--text-muted); background: transparent; color: var(--text-main); outline: none;">
+        <button id="sendBtn" style="padding: 12px 20px; border-radius: 8px; border: none; background: var(--accent-blue); color: white; font-weight: bold; cursor: pointer;">Senden</button>
+    </div>
+
     <div id="statusBox">
         <p id="status" aria-live="polite">Bereit für Spracheingabe</p>
     </div>
@@ -193,6 +198,58 @@
         const hud = document.getElementById('hud');
         const statusText = document.getElementById('status');
         const audioPlayer = document.getElementById('audioPlayer');
+
+        // NEU: Die universelle Sende-Funktion
+        const sendToJarvis = async (textMessage) => {
+            hud.className = 'hud-container thinking';
+            statusText.style.color = 'var(--accent-blue)';
+            statusText.innerText = `"${textMessage}"\nVerarbeite...`;
+
+            // Eingabefeld leeren (falls er über Chat getippt hat)
+            const textInput = document.getElementById('textInput');
+            if (textInput) textInput.value = '';
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: "voice_walk_01",
+                        timestamp: new Date().toISOString(),
+                        payload: { type: "text", content: textMessage }
+                    })
+                });
+
+                const data = await response.json();
+                statusText.style.color = 'var(--text-main)';
+                // Zeigt die echte Antwort auf dem Display an, entfernt aber die Sternchen für die Optik
+                statusText.innerText = data.jarvis_response.replace(/\*/g, '');
+
+                if (data.audio_base64) {
+                    audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
+                    
+                    audioPlayer.onended = () => {
+                        hud.className = 'hud-container';
+                        statusText.style.color = 'var(--text-muted)';
+                        statusText.innerText = "Bereit für Eingabe";
+                    };
+
+                    audioPlayer.play().catch(err => {
+                        statusText.style.color = 'var(--accent-red)';
+                        statusText.innerText = "Audio-Wiedergabe blockiert.";
+                        hud.className = 'hud-container';
+                    });
+                } else {
+                    hud.className = 'hud-container';
+                    statusText.style.color = 'var(--text-muted)';
+                    statusText.innerText = "Bereit für Eingabe";
+                }
+            } catch (error) {
+                statusText.style.color = 'var(--accent-red)';
+                statusText.innerText = "Verbindungsfehler zum Server.";
+                hud.className = 'hud-container';
+            }
+        };
 
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         
@@ -222,71 +279,27 @@
                 }
             });
 
-            recognition.onresult = async (event) => {
+            // ANPASSUNG: Hier greifen wir den Text ab und übergeben ihn an die neue Funktion
+            recognition.onresult = (event) => {
                 const transcript = event.results[0][0].transcript;
-                hud.className = 'hud-container thinking';
-                statusText.style.color = 'var(--accent-blue)';
-                statusText.innerText = `"${transcript}"\nVerarbeite...`;
-
-                try {
-                    const response = await fetch('/api/chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            session_id: "voice_walk_01",
-                            timestamp: new Date().toISOString(),
-                            payload: { type: "text", content: transcript }
-                        })
-                    });
-
-                    const data = await response.json();
-                    statusText.style.color = 'var(--text-main)';
-                    statusText.innerText = `Jarvis antwortet...`; 
-
-                    if (data.audio_base64) {
-                        audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
-                        
-                        audioPlayer.onended = () => {
-                            hud.className = 'hud-container';
-                            statusText.style.color = 'var(--text-muted)';
-                            statusText.innerText = "Bereit für Spracheingabe";
-                        };
-
-                        audioPlayer.play().catch(err => {
-                            statusText.style.color = 'var(--accent-red)';
-                            statusText.innerText = "Audio-Wiedergabe blockiert.";
-                            hud.className = 'hud-container';
-                        });
-                    } else {
-                        hud.className = 'hud-container';
-                        statusText.style.color = 'var(--text-muted)';
-                        statusText.innerText = "Bereit für Spracheingabe";
-                    }
-                } catch (error) {
-                    statusText.style.color = 'var(--accent-red)';
-                    statusText.innerText = "Verbindungsfehler zum Server.";
-                    hud.className = 'hud-container';
-                }
+                sendToJarvis(transcript);
             };
 
-            // NEU: Der globale Cleanup-Catcher!
             recognition.onend = () => {
-                // Wenn das Mikrofon ausgeht, wir aber NICHT im "Thinking" Modus sind (also kein Text erkannt wurde)
                 if (!hud.classList.contains('thinking')) {
                     hud.className = 'hud-container';
                     statusText.style.color = 'var(--text-muted)';
-                    statusText.innerText = "Bereit für Spracheingabe";
+                    statusText.innerText = "Bereit für Eingabe";
                 }
             };
 
-            // NEU: Falls er Ton hört, aber keine Worte erkennt
             recognition.onnomatch = () => {
                 hud.className = 'hud-container';
                 statusText.style.color = 'var(--accent-red)';
                 statusText.innerText = "Nichts verstanden. Bitte wiederholen.";
                 setTimeout(() => {
                     statusText.style.color = 'var(--text-muted)';
-                    statusText.innerText = "Bereit für Spracheingabe";
+                    statusText.innerText = "Bereit für Eingabe";
                 }, 2000);
             };
             
@@ -294,7 +307,6 @@
                 hud.className = 'hud-container';
                 statusText.style.color = 'var(--accent-red)';
                 
-                // Besseres Fehler-Feedback für dich
                 if (event.error === 'not-allowed') {
                     statusText.innerText = "Mikrofon-Zugriff blockiert!";
                 } else if (event.error === 'no-speech') {
@@ -305,9 +317,27 @@
                 
                 setTimeout(() => {
                     statusText.style.color = 'var(--text-muted)';
-                    statusText.innerText = "Bereit für Spracheingabe";
+                    statusText.innerText = "Bereit für Eingabe";
                 }, 3000);
             };
+        }
+
+        // NEU: Die Event-Listener für das Textfeld
+        const sendBtn = document.getElementById('sendBtn');
+        const textInput = document.getElementById('textInput');
+
+        if (sendBtn && textInput) {
+            sendBtn.addEventListener('click', () => {
+                const text = textInput.value.trim();
+                if(text) sendToJarvis(text);
+            });
+
+            textInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const text = e.target.value.trim();
+                    if(text) sendToJarvis(text);
+                }
+            });
         }
     </script>
 </body>
