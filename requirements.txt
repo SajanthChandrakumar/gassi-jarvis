@@ -5,3 +5,4 @@ google-genai
 python-dotenv
 edge-tts
 notion-client
+Pillow
