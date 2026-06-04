@@ -23,12 +23,14 @@ import base64
 import edge_tts
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from google.genai import types
 from app.notion_service import save_protocol_to_notion
 
 from app.models import ChatRequest
 from app.memory import get_session, clear_pending_command
-from app.agent import get_gemini_response, analyze_user_intent
+from app.agent import get_gemini_response, analyze_user_intent, client, MODEL_NAME
 from app.security import evaluate_security_level, execute_shell_command
+from app.vision import capture_and_compress_screen
 
 # ─── Server Setup ─────────────────────────────────────────────────────────────
 
@@ -281,6 +283,40 @@ async def chat_with_jarvis(request: ChatRequest):
                             return await _build_response(
                                 text=f"Unbekannter Aktionstyp: {action_type}",
                                 action="unknown_action_type",
+                            )
+
+                    elif fc.name == "take_screenshot":
+                        print("[VISION] Nehme Screenshot auf...")
+                        try:
+                            image_bytes = capture_and_compress_screen()
+                        except (PermissionError, FileNotFoundError) as e:
+                            return await _build_response(
+                                text=str(e),
+                                action="screenshot_failed",
+                            )
+                        except Exception as e:
+                            return await _build_response(
+                                text=f"Unerwarteter Fehler beim Screenshot: {e}",
+                                action="screenshot_error",
+                            )
+                        
+                        print("[VISION] Screenshot erstellt. Sende an Gemini Vision...")
+                        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+                        
+                        try:
+                            vision_response = client.models.generate_content(
+                                model=MODEL_NAME,
+                                contents=[user_text, image_part]
+                            )
+                            vision_text = vision_response.text if vision_response.text else "Ich konnte das Bild leider nicht auswerten."
+                            return await _build_response(
+                                text=vision_text,
+                                action="vision_screenshot_analyzed",
+                            )
+                        except Exception as e:
+                            return await _build_response(
+                                text=f"Fehler bei der Bildanalyse: {e}",
+                                action="vision_analysis_error",
                             )
 
                     # Handle memory tools that Gemini called automatically
