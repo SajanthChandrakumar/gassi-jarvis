@@ -5,93 +5,339 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gassi-Jarvis</title>
     <style>
-        body { font-family: -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0f0f13; color: white; }
-        #micBtn { 
-            width: 120px; height: 120px; border-radius: 50%; border: none; 
-            background: #2c2c2e; color: white; font-size: 3rem; cursor: pointer; 
-            box-shadow: 0 4px 15px rgba(0,0,0,0.5); transition: all 0.3s ease;
+        :root {
+            --bg-color: #09090b; /* Sehr dunkles, elegantes Grau */
+            --surface-color: rgba(255, 255, 255, 0.03);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-main: #f4f4f5;
+            --text-muted: #a1a1aa;
+            
+            /* Moderne, weichere Farben für Zustände */
+            --accent-blue: #3b82f6; 
+            --accent-red: #ef4444;  
         }
-        #micBtn.listening { background: #ff453a; box-shadow: 0 0 30px rgba(255, 69, 58, 0.8); transform: scale(1.1); }
-        #micBtn.thinking { background: #0a84ff; animation: pulse 1.5s infinite; }
-        #status { margin-top: 30px; font-size: 1.2rem; color: #8e8e93; text-align: center; max-width: 80%; }
+
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            display: flex; 
+            flex-direction: column; 
+            align-items: center; 
+            justify-content: center; 
+            min-height: 100vh; 
+            margin: 0; 
+            background-color: var(--bg-color);
+            /* Subtiler, weicher Glow im Hintergrund */
+            background-image: radial-gradient(circle at 50% -20%, rgba(59, 130, 246, 0.15), transparent 50%);
+            color: var(--text-main); 
+            overflow: hidden;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        #dateDisplay { 
+            position: absolute;
+            top: 50px;
+            text-align: center; 
+            z-index: 10;
+        }
         
-        @keyframes pulse {
-            0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(10, 132, 255, 0.7); }
-            70% { transform: scale(1.05); box-shadow: 0 0 0 20px rgba(10, 132, 255, 0); }
-            100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(10, 132, 255, 0); }
+        #dateDisplay .day { 
+            font-size: 1.2rem; 
+            font-weight: 400; 
+            letter-spacing: 1px;
+            color: var(--text-main); 
+        }
+        #dateDisplay .date { 
+            font-size: 0.85rem; 
+            font-weight: 300;
+            color: var(--text-muted); 
+            margin-top: 6px;
+            letter-spacing: 0.5px;
+        }
+
+        .hud-container {
+            position: relative;
+            width: 250px;
+            height: 250px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+        }
+
+        /* Der minimalistische Button */
+        #micBtn { 
+            width: 100px; 
+            height: 100px; 
+            border-radius: 50%; 
+            border: 1px solid var(--border-color); 
+            background: var(--surface-color); 
+            color: var(--text-main); 
+            cursor: pointer; 
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            backdrop-filter: blur(12px); /* Glass-Effekt */
+            -webkit-backdrop-filter: blur(12px);
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            z-index: 20;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        #micBtn svg {
+            width: 32px; 
+            height: 32px;
+            transition: all 0.3s ease;
+            opacity: 0.8;
+        }
+
+        #micBtn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            transform: scale(1.02);
+        }
+
+        /* Status: Zuhören (Sanftes rotes Atmen) */
+        .hud-container.listening #micBtn { 
+            background: rgba(239, 68, 68, 0.1);
+            border-color: rgba(239, 68, 68, 0.3);
+            color: var(--accent-red);
+            animation: pulse-red 2s infinite cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .hud-container.listening #micBtn svg { opacity: 1; }
+
+        /* Status: Denken (Sanftes blaues Atmen) */
+        .hud-container.thinking #micBtn {
+            background: rgba(59, 130, 246, 0.1);
+            border-color: rgba(59, 130, 246, 0.3);
+            color: var(--accent-blue);
+            animation: pulse-blue 2s infinite cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .hud-container.thinking #micBtn svg { opacity: 1; }
+
+        /* Status Box im Glassmorphism-Look */
+        #statusBox {
+            position: absolute;
+            bottom: 60px;
+            width: 85%;
+            max-width: 400px;
+            background: var(--surface-color);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 16px 20px;
+            text-align: center;
+            z-index: 10;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        #status { 
+            font-size: 0.95rem; 
+            font-weight: 400;
+            color: var(--text-muted); 
+            margin: 0;
+            min-height: 1.2em;
+            line-height: 1.5;
+            letter-spacing: 0.3px;
+        }
+
+        /* Weiche Keyframe-Animationen */
+        @keyframes pulse-red { 
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); } 
+            70% { box-shadow: 0 0 0 25px rgba(239, 68, 68, 0); } 
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } 
+        }
+        @keyframes pulse-blue { 
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); } 
+            70% { box-shadow: 0 0 0 25px rgba(59, 130, 246, 0); } 
+            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); } 
         }
     </style>
 </head>
 <body>
     
-    <button id="micBtn">🎙️</button>
-    <p id="status">Tippen, um zu sprechen</p>
+    <div id="dateDisplay">
+        <div class="day" id="dayText"></div>
+        <div class="date" id="dateText"></div>
+    </div>
+
+    <div class="hud-container" id="hud">
+        <button id="micBtn" aria-label="Spracheingabe starten">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+                <line x1="12" y1="19" x2="12" y2="22"></line>
+            </svg>
+        </button>
+    </div>
+
+    <div id="chatContainer" style="margin-top: 20px; display: flex; gap: 10px; justify-content: center; width: 100%; max-width: 400px; margin-left: auto; margin-right: auto;">
+        <input type="text" id="textInput" placeholder="Tippe eine Nachricht..." style="flex-grow: 1; padding: 12px; border-radius: 8px; border: 1px solid var(--text-muted); background: transparent; color: var(--text-main); outline: none;">
+        <button id="sendBtn" style="padding: 12px 20px; border-radius: 8px; border: none; background: var(--accent-blue); color: white; font-weight: bold; cursor: pointer;">Senden</button>
+    </div>
+
+    <div id="statusBox">
+        <p id="status" aria-live="polite">Bereit für Spracheingabe</p>
+    </div>
+
+    <audio id="audioPlayer" playsinline></audio>
 
     <script>
-        const micBtn = document.getElementById('micBtn');
-        const statusText = document.getElementById('status');
+        const updateDate = () => {
+            const now = new Date();
+            const optionsDay = { weekday: 'long' };
+            const optionsDate = { day: 'numeric', month: 'long', year: 'numeric' };
+            document.getElementById('dayText').innerText = now.toLocaleDateString('de-DE', optionsDay);
+            document.getElementById('dateText').innerText = now.toLocaleDateString('de-DE', optionsDate);
+        };
+        updateDate();
+        setInterval(updateDate, 60000);
 
-        // Web Speech API initialisieren (Chrome & Safari Support)
+        const micBtn = document.getElementById('micBtn');
+        const hud = document.getElementById('hud');
+        const statusText = document.getElementById('status');
+        const audioPlayer = document.getElementById('audioPlayer');
+
+        // NEU: Die universelle Sende-Funktion
+        const sendToJarvis = async (textMessage) => {
+            hud.className = 'hud-container thinking';
+            statusText.style.color = 'var(--accent-blue)';
+            statusText.innerText = `"${textMessage}"\nVerarbeite...`;
+
+            // Eingabefeld leeren (falls er über Chat getippt hat)
+            const textInput = document.getElementById('textInput');
+            if (textInput) textInput.value = '';
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        session_id: "voice_walk_01",
+                        timestamp: new Date().toISOString(),
+                        payload: { type: "text", content: textMessage }
+                    })
+                });
+
+                const data = await response.json();
+                statusText.style.color = 'var(--text-main)';
+                // Zeigt die echte Antwort auf dem Display an, entfernt aber die Sternchen für die Optik
+                statusText.innerText = data.jarvis_response.replace(/\*/g, '');
+
+                if (data.audio_base64) {
+                    audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
+                    
+                    audioPlayer.onended = () => {
+                        hud.className = 'hud-container';
+                        statusText.style.color = 'var(--text-muted)';
+                        statusText.innerText = "Bereit für Eingabe";
+                    };
+
+                    audioPlayer.play().catch(err => {
+                        statusText.style.color = 'var(--accent-red)';
+                        statusText.innerText = "Audio-Wiedergabe blockiert.";
+                        hud.className = 'hud-container';
+                    });
+                } else {
+                    hud.className = 'hud-container';
+                    statusText.style.color = 'var(--text-muted)';
+                    statusText.innerText = "Bereit für Eingabe";
+                }
+            } catch (error) {
+                statusText.style.color = 'var(--accent-red)';
+                statusText.innerText = "Verbindungsfehler zum Server.";
+                hud.className = 'hud-container';
+            }
+        };
+
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         
         if (!SpeechRecognition) {
-            statusText.innerText = "Dein Browser unterstützt keine Spracherkennung. Nutze Chrome oder Safari.";
-            micBtn.style.display = 'none';
+            statusText.innerText = "Spracherkennung wird nicht unterstützt.";
+            statusText.style.color = "var(--accent-red)";
+            micBtn.style.opacity = '0.3';
+            micBtn.style.pointerEvents = 'none';
         } else {
             const recognition = new SpeechRecognition();
             recognition.lang = 'de-DE';
-            recognition.interimResults = false; // Wir wollen nur den fertigen Satz
+            recognition.interimResults = false;
 
-            // 1. Klick auf den Mikrofon-Button
             micBtn.addEventListener('click', () => {
-                recognition.start();
-                micBtn.classList.add('listening');
-                statusText.innerText = "Ich höre zu...";
-            });
+                if(hud.classList.contains('listening') || hud.classList.contains('thinking')) return;
 
-            // 2. Sprache wurde erkannt
-            recognition.onresult = async (event) => {
-                const transcript = event.results[0][0].transcript;
-                micBtn.classList.remove('listening');
-                micBtn.classList.add('thinking');
-                statusText.innerText = `Du: "${transcript}"\nJarvis denkt nach...`;
+                audioPlayer.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+                audioPlayer.play().catch(e => console.log("Unlock waiting..."));
 
                 try {
-                    // Sende den erkannten Text an unser Backend
-                    const response = await fetch('/api/chat', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            session_id: "voice_walk_01",
-                            timestamp: new Date().toISOString(),
-                            payload: { type: "text", content: transcript }
-                        })
-                    });
+                    recognition.start();
+                    hud.className = 'hud-container listening';
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = "Hört zu...";
+                } catch(e) {
+                    console.log("Mikrofon läuft bereits.");
+                }
+            });
 
-                    const data = await response.json();
-                    statusText.innerText = `Jarvis: "${data.jarvis_response}"`;
+            // ANPASSUNG: Hier greifen wir den Text ab und übergeben ihn an die neue Funktion
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                sendToJarvis(transcript);
+            };
 
-                    // Audio abspielen
-                    if (data.audio_base64) {
-                        const audio = new Audio("data:audio/mp3;base64," + data.audio_base64);
-                        audio.play();
-                    }
-                } catch (error) {
-                    statusText.innerText = "Fehler bei der Server-Verbindung.";
-                } finally {
-                    micBtn.classList.remove('thinking');
+            recognition.onend = () => {
+                if (!hud.classList.contains('thinking')) {
+                    hud.className = 'hud-container';
+                    statusText.style.color = 'var(--text-muted)';
+                    statusText.innerText = "Bereit für Eingabe";
                 }
             };
 
-            // Falls die Spracherkennung abbricht
-            recognition.onspeechend = () => {
-                recognition.stop();
+            recognition.onnomatch = () => {
+                hud.className = 'hud-container';
+                statusText.style.color = 'var(--accent-red)';
+                statusText.innerText = "Nichts verstanden. Bitte wiederholen.";
+                setTimeout(() => {
+                    statusText.style.color = 'var(--text-muted)';
+                    statusText.innerText = "Bereit für Eingabe";
+                }, 2000);
             };
             
             recognition.onerror = (event) => {
-                micBtn.classList.remove('listening');
-                statusText.innerText = `Fehler beim Hören: ${event.error}`;
+                hud.className = 'hud-container';
+                statusText.style.color = 'var(--accent-red)';
+                
+                if (event.error === 'not-allowed') {
+                    statusText.innerText = "Mikrofon-Zugriff blockiert!";
+                } else if (event.error === 'no-speech') {
+                    statusText.innerText = "Keine Sprache erkannt.";
+                } else {
+                    statusText.innerText = `Fehler: ${event.error}`;
+                }
+                
+                setTimeout(() => {
+                    statusText.style.color = 'var(--text-muted)';
+                    statusText.innerText = "Bereit für Eingabe";
+                }, 3000);
             };
+        }
+
+        // NEU: Die Event-Listener für das Textfeld
+        const sendBtn = document.getElementById('sendBtn');
+        const textInput = document.getElementById('textInput');
+
+        if (sendBtn && textInput) {
+            sendBtn.addEventListener('click', () => {
+                const text = textInput.value.trim();
+                if(text) sendToJarvis(text);
+            });
+
+            textInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    const text = e.target.value.trim();
+                    if(text) sendToJarvis(text);
+                }
+            });
         }
     </script>
 </body>
