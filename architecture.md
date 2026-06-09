@@ -60,3 +60,12 @@ If a Level 2 command is generated:
 3. The next time the user speaks, `main.py` intercepts the audio.
 4. `agent.py` uses Gemini (Temperature 0.0) as an NLP intent classifier to evaluate if the user said `APPROVE` ("Ja", "Mach das") or `DENY` ("Stopp", "Nein").
 5. If approved, `security.py` executes the command with `force=True`. If denied, it is dropped.
+
+---
+
+## Kill-Switch (Interruptibility)
+
+To ensure the AI is fully controllable and not locked in long operations or TTS playback, a frontend Kill-Switch is implemented:
+- **AbortController:** Every fetch request to `/api/chat` is bound to an `AbortController`. If the user interrupts, the pending HTTP request is instantly aborted.
+- **Audio Interruption:** If Jarvis is currently speaking (TTS playback), clicking the microphone instantly pauses the audio, resets the time, and triggers the microphone for new input.
+- **UI State Management:** Visual feedback (Amber pulsing) is provided when Jarvis is speaking, making it clear that he can be interrupted.
