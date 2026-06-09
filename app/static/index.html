@@ -4,60 +4,83 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gassi-Jarvis</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-color: #09090b; /* Sehr dunkles, elegantes Grau */
-            --surface-color: rgba(255, 255, 255, 0.03);
-            --border-color: rgba(255, 255, 255, 0.08);
-            --text-main: #f4f4f5;
-            --text-muted: #a1a1aa;
+            --bg-base: #030712;
+            --bg-glow: #111827;
+            --surface-color: rgba(255, 255, 255, 0.04);
+            --border-color: rgba(255, 255, 255, 0.06);
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
             
-            /* Moderne, weichere Farben für Zustände */
-            --accent-blue: #3b82f6; 
-            --accent-red: #ef4444;  
+            --accent-blue: #3b82f6;
+            --accent-blue-glow: rgba(59, 130, 246, 0.5);
+            --accent-red: #ef4444;
+            --accent-red-glow: rgba(239, 68, 68, 0.5);
         }
 
         body { 
-            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            font-family: 'Outfit', sans-serif;
             display: flex; 
             flex-direction: column; 
             align-items: center; 
             justify-content: center; 
             min-height: 100vh; 
             margin: 0; 
-            background-color: var(--bg-color);
-            /* Subtiler, weicher Glow im Hintergrund */
-            background-image: radial-gradient(circle at 50% -20%, rgba(59, 130, 246, 0.15), transparent 50%);
+            background-color: var(--bg-base);
+            background-image: 
+                radial-gradient(circle at 50% 0%, var(--bg-glow), transparent 60%),
+                linear-gradient(180deg, rgba(59, 130, 246, 0.03) 0%, transparent 100%);
             color: var(--text-main); 
             overflow: hidden;
             -webkit-font-smoothing: antialiased;
         }
 
+        /* Ambient floating orbs for premium feel */
+        .ambient-orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            z-index: 0;
+            opacity: 0.4;
+            pointer-events: none;
+            animation: float 10s infinite alternate ease-in-out;
+        }
+        .orb-1 { width: 300px; height: 300px; background: var(--accent-blue-glow); top: -100px; left: -100px; }
+        .orb-2 { width: 400px; height: 400px; background: rgba(139, 92, 246, 0.2); bottom: -200px; right: -100px; animation-delay: -5s; }
+
+        @keyframes float {
+            0% { transform: translate(0, 0); }
+            100% { transform: translate(30px, 50px); }
+        }
+
         #dateDisplay { 
             position: absolute;
-            top: 50px;
+            top: 8vh;
             text-align: center; 
             z-index: 10;
         }
         
         #dateDisplay .day { 
-            font-size: 1.2rem; 
-            font-weight: 400; 
-            letter-spacing: 1px;
+            font-size: 1.5rem; 
+            font-weight: 500; 
+            letter-spacing: 1.5px;
             color: var(--text-main); 
+            text-transform: uppercase;
         }
         #dateDisplay .date { 
-            font-size: 0.85rem; 
+            font-size: 1rem; 
             font-weight: 300;
             color: var(--text-muted); 
-            margin-top: 6px;
+            margin-top: 4px;
             letter-spacing: 0.5px;
         }
 
         .hud-container {
             position: relative;
-            width: 250px;
-            height: 250px;
+            width: 300px;
+            height: 300px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -66,96 +89,213 @@
 
         /* Der minimalistische Button */
         #micBtn { 
-            width: 100px; 
-            height: 100px; 
+            width: 120px; 
+            height: 120px; 
             border-radius: 50%; 
             border: 1px solid var(--border-color); 
-            background: var(--surface-color); 
+            background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.02)); 
             color: var(--text-main); 
             cursor: pointer; 
             display: flex;
             align-items: center;
             justify-content: center;
-            backdrop-filter: blur(12px); /* Glass-Effekt */
-            -webkit-backdrop-filter: blur(12px);
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            transition: all 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
             position: relative;
             z-index: 20;
-            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3), inset 0 0 20px rgba(255, 255, 255, 0.05);
+        }
+
+        #micBtn::before {
+            content: '';
+            position: absolute;
+            inset: -2px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, rgba(255,255,255,0.4), transparent);
+            z-index: -1;
+            opacity: 0.3;
+            transition: opacity 0.3s;
         }
 
         #micBtn svg {
-            width: 32px; 
-            height: 32px;
-            transition: all 0.3s ease;
-            opacity: 0.8;
+            width: 38px; 
+            height: 38px;
+            transition: all 0.4s ease;
+            opacity: 0.9;
+            filter: drop-shadow(0 2px 8px rgba(0,0,0,0.5));
         }
 
         #micBtn:hover {
-            background: rgba(255, 255, 255, 0.08);
-            transform: scale(1.02);
+            transform: scale(1.08) translateY(-4px);
+            box-shadow: 0 15px 40px rgba(0, 0, 0, 0.4), inset 0 0 25px rgba(255, 255, 255, 0.08);
         }
+        #micBtn:hover::before { opacity: 0.6; }
+        #micBtn:hover svg { transform: scale(1.1); opacity: 1; }
 
-        /* Status: Zuhören (Sanftes rotes Atmen) */
+        /* Status: Zuhören (Gleichmäßiges rotes Atmen) */
         .hud-container.listening #micBtn { 
-            background: rgba(239, 68, 68, 0.1);
-            border-color: rgba(239, 68, 68, 0.3);
+            background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.05));
+            border-color: rgba(239, 68, 68, 0.5);
             color: var(--accent-red);
-            animation: pulse-red 2s infinite cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 0 30px rgba(239, 68, 68, 0.3), inset 0 0 20px rgba(239, 68, 68, 0.2);
         }
-        .hud-container.listening #micBtn svg { opacity: 1; }
-
-        /* Status: Denken (Sanftes blaues Atmen) */
-        .hud-container.thinking #micBtn {
-            background: rgba(59, 130, 246, 0.1);
-            border-color: rgba(59, 130, 246, 0.3);
-            color: var(--accent-blue);
-            animation: pulse-blue 2s infinite cubic-bezier(0.4, 0, 0.2, 1);
-        }
-        .hud-container.thinking #micBtn svg { opacity: 1; }
-
-        /* Status Box im Glassmorphism-Look */
-        #statusBox {
+        
+        .hud-container.listening::after, .hud-container.listening::before {
+            content: '';
             position: absolute;
-            bottom: 60px;
-            width: 85%;
-            max-width: 400px;
-            background: var(--surface-color);
-            border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 16px 20px;
-            text-align: center;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(239, 68, 68, 0.4);
+            z-index: 15;
+            animation: ripple-red 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            pointer-events: none;
+        }
+        .hud-container.listening::after {
+            animation-delay: 1s;
+        }
+
+        /* Status: Denken (Gleichmäßiges blaues Atmen) */
+        .hud-container.thinking #micBtn {
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.2), rgba(59, 130, 246, 0.05));
+            border-color: rgba(59, 130, 246, 0.5);
+            color: var(--accent-blue);
+            box-shadow: 0 0 30px rgba(59, 130, 246, 0.3), inset 0 0 20px rgba(59, 130, 246, 0.2);
+        }
+        
+        .hud-container.thinking::after, .hud-container.thinking::before {
+            content: '';
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(59, 130, 246, 0.4);
+            z-index: 15;
+            animation: ripple-blue 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            pointer-events: none;
+        }
+        .hud-container.thinking::after {
+            animation-delay: 1s;
+        }
+
+        /* Status: Speaking (Amber pulsing) */
+        .hud-container.speaking #micBtn {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+            border-color: rgba(245, 158, 11, 0.5);
+            color: #f59e0b;
+            box-shadow: 0 0 30px rgba(245, 158, 11, 0.3), inset 0 0 20px rgba(245, 158, 11, 0.2);
+        }
+        
+        .hud-container.speaking::after, .hud-container.speaking::before {
+            content: '';
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(245, 158, 11, 0.4);
+            z-index: 15;
+            animation: ripple-amber 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            pointer-events: none;
+        }
+        .hud-container.speaking::after {
+            animation-delay: 1s;
+        }
+
+        #chatContainer {
+            margin-top: 2vh; 
+            display: flex; 
+            gap: 12px; 
+            justify-content: center; 
+            width: 90%; 
+            max-width: 450px; 
             z-index: 10;
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+        }
+
+        #textInput {
+            flex-grow: 1; 
+            padding: 16px 20px; 
+            border-radius: 12px; 
+            border: 1px solid var(--border-color); 
+            background: var(--surface-color); 
+            color: var(--text-main); 
+            font-family: 'Outfit', sans-serif;
+            font-size: 1rem;
+            outline: none;
+            backdrop-filter: blur(10px);
             transition: all 0.3s ease;
         }
 
+        #textInput:focus {
+            border-color: rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.08);
+            box-shadow: 0 0 20px rgba(255,255,255,0.05);
+        }
+
+        #sendBtn {
+            padding: 0 24px; 
+            border-radius: 12px; 
+            border: none; 
+            background: var(--accent-blue); 
+            color: white; 
+            font-weight: 600; 
+            font-family: 'Outfit', sans-serif;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+        }
+
+        #sendBtn:hover {
+            background: #2563eb;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+        }
+
+        #statusBox {
+            position: absolute;
+            bottom: 8vh;
+            width: 90%;
+            max-width: 450px;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 20px 24px;
+            text-align: center;
+            z-index: 10;
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+            transition: all 0.4s ease;
+        }
+
         #status { 
-            font-size: 0.95rem; 
+            font-size: 1.05rem; 
             font-weight: 400;
             color: var(--text-muted); 
             margin: 0;
-            min-height: 1.2em;
-            line-height: 1.5;
+            min-height: 1.5em;
+            line-height: 1.6;
             letter-spacing: 0.3px;
         }
 
-        /* Weiche Keyframe-Animationen */
-        @keyframes pulse-red { 
-            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); } 
-            70% { box-shadow: 0 0 0 25px rgba(239, 68, 68, 0); } 
-            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); } 
+        @keyframes ripple-red {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(2.5); opacity: 0; }
         }
-        @keyframes pulse-blue { 
-            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); } 
-            70% { box-shadow: 0 0 0 25px rgba(59, 130, 246, 0); } 
-            100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); } 
+        @keyframes ripple-blue {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
+        @keyframes ripple-amber {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(2.5); opacity: 0; }
         }
     </style>
 </head>
 <body>
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
     
     <div id="dateDisplay">
         <div class="day" id="dayText"></div>
@@ -164,7 +304,7 @@
 
     <div class="hud-container" id="hud">
         <button id="micBtn" aria-label="Spracheingabe starten">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"></path>
                 <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
                 <line x1="12" y1="19" x2="12" y2="22"></line>
@@ -172,9 +312,9 @@
         </button>
     </div>
 
-    <div id="chatContainer" style="margin-top: 20px; display: flex; gap: 10px; justify-content: center; width: 100%; max-width: 400px; margin-left: auto; margin-right: auto;">
-        <input type="text" id="textInput" placeholder="Tippe eine Nachricht..." style="flex-grow: 1; padding: 12px; border-radius: 8px; border: 1px solid var(--text-muted); background: transparent; color: var(--text-main); outline: none;">
-        <button id="sendBtn" style="padding: 12px 20px; border-radius: 8px; border: none; background: var(--accent-blue); color: white; font-weight: bold; cursor: pointer;">Senden</button>
+    <div id="chatContainer">
+        <input type="text" id="textInput" placeholder="Tippe eine Nachricht...">
+        <button id="sendBtn">Senden</button>
     </div>
 
     <div id="statusBox">
@@ -184,6 +324,9 @@
     <audio id="audioPlayer" playsinline></audio>
 
     <script>
+        let isSpeaking = false;
+        let currentAbortController = null;
+
         const updateDate = () => {
             const now = new Date();
             const optionsDay = { weekday: 'long' };
@@ -199,13 +342,16 @@
         const statusText = document.getElementById('status');
         const audioPlayer = document.getElementById('audioPlayer');
 
-        // NEU: Die universelle Sende-Funktion
         const sendToJarvis = async (textMessage) => {
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+            currentAbortController = new AbortController();
+
             hud.className = 'hud-container thinking';
-            statusText.style.color = 'var(--accent-blue)';
+            statusText.style.color = 'var(--text-main)';
             statusText.innerText = `"${textMessage}"\nVerarbeite...`;
 
-            // Eingabefeld leeren (falls er über Chat getippt hat)
             const textInput = document.getElementById('textInput');
             if (textInput) textInput.value = '';
 
@@ -213,6 +359,7 @@
                 const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: currentAbortController.signal,
                     body: JSON.stringify({
                         session_id: "voice_walk_01",
                         timestamp: new Date().toISOString(),
@@ -222,19 +369,22 @@
 
                 const data = await response.json();
                 statusText.style.color = 'var(--text-main)';
-                // Zeigt die echte Antwort auf dem Display an, entfernt aber die Sternchen für die Optik
                 statusText.innerText = data.jarvis_response.replace(/\*/g, '');
 
                 if (data.audio_base64) {
                     audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
                     
                     audioPlayer.onended = () => {
+                        isSpeaking = false;
                         hud.className = 'hud-container';
                         statusText.style.color = 'var(--text-muted)';
                         statusText.innerText = "Bereit für Eingabe";
                     };
 
+                    isSpeaking = true;
+                    hud.className = 'hud-container speaking';
                     audioPlayer.play().catch(err => {
+                        isSpeaking = false;
                         statusText.style.color = 'var(--accent-red)';
                         statusText.innerText = "Audio-Wiedergabe blockiert.";
                         hud.className = 'hud-container';
@@ -245,9 +395,13 @@
                     statusText.innerText = "Bereit für Eingabe";
                 }
             } catch (error) {
-                statusText.style.color = 'var(--accent-red)';
-                statusText.innerText = "Verbindungsfehler zum Server.";
-                hud.className = 'hud-container';
+                if (error.name === 'AbortError') {
+                    console.log("Fetch aborted by user kill-switch.");
+                } else {
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = "Verbindungsfehler zum Server.";
+                    hud.className = 'hud-container';
+                }
             }
         };
 
@@ -264,7 +418,28 @@
             recognition.interimResults = false;
 
             micBtn.addEventListener('click', () => {
-                if(hud.classList.contains('listening') || hud.classList.contains('thinking')) return;
+                if (isSpeaking || hud.classList.contains('thinking')) {
+                    audioPlayer.pause();
+                    audioPlayer.currentTime = 0;
+                    isSpeaking = false;
+                    
+                    if (currentAbortController) {
+                        currentAbortController.abort();
+                    }
+                    
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = "Unterbrochen.";
+                    
+                    try {
+                        recognition.start();
+                        hud.className = 'hud-container listening';
+                    } catch(e) {
+                        console.log("Mikrofon läuft bereits.");
+                    }
+                    return;
+                }
+
+                if(hud.classList.contains('listening')) return;
 
                 audioPlayer.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
                 audioPlayer.play().catch(e => console.log("Unlock waiting..."));
@@ -272,14 +447,13 @@
                 try {
                     recognition.start();
                     hud.className = 'hud-container listening';
-                    statusText.style.color = 'var(--accent-red)';
+                    statusText.style.color = 'var(--text-main)';
                     statusText.innerText = "Hört zu...";
                 } catch(e) {
                     console.log("Mikrofon läuft bereits.");
                 }
             });
 
-            // ANPASSUNG: Hier greifen wir den Text ab und übergeben ihn an die neue Funktion
             recognition.onresult = (event) => {
                 const transcript = event.results[0][0].transcript;
                 sendToJarvis(transcript);
@@ -322,7 +496,6 @@
             };
         }
 
-        // NEU: Die Event-Listener für das Textfeld
         const sendBtn = document.getElementById('sendBtn');
         const textInput = document.getElementById('textInput');
 

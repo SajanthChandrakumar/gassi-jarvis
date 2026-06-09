@@ -137,3 +137,4 @@ All communication happens via the `/api/chat` endpoint.
 
 - [ ] Sprint 1: Local Wake-Word Integration (Porcupine/Picovoice)  
 - [ ] Sprint 2: Audio Streaming via WebSockets (Low Latency Interrupts)  
+- [x] Sprint 3: The Kill-Switch (Interruptibility) - Frontend AbortController and UI state management for instant audio interruptions.
