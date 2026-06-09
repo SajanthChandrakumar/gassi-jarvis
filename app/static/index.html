@@ -179,6 +179,29 @@
             animation-delay: 1s;
         }
 
+        /* Status: Speaking (Amber pulsing) */
+        .hud-container.speaking #micBtn {
+            background: linear-gradient(135deg, rgba(245, 158, 11, 0.2), rgba(245, 158, 11, 0.05));
+            border-color: rgba(245, 158, 11, 0.5);
+            color: #f59e0b;
+            box-shadow: 0 0 30px rgba(245, 158, 11, 0.3), inset 0 0 20px rgba(245, 158, 11, 0.2);
+        }
+        
+        .hud-container.speaking::after, .hud-container.speaking::before {
+            content: '';
+            position: absolute;
+            width: 120px;
+            height: 120px;
+            border-radius: 50%;
+            background: rgba(245, 158, 11, 0.4);
+            z-index: 15;
+            animation: ripple-amber 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+            pointer-events: none;
+        }
+        .hud-container.speaking::after {
+            animation-delay: 1s;
+        }
+
         #chatContainer {
             margin-top: 2vh; 
             display: flex; 
@@ -264,6 +287,10 @@
             0% { transform: scale(1); opacity: 1; }
             100% { transform: scale(2.5); opacity: 0; }
         }
+        @keyframes ripple-amber {
+            0% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(2.5); opacity: 0; }
+        }
     </style>
 </head>
 <body>
@@ -297,6 +324,9 @@
     <audio id="audioPlayer" playsinline></audio>
 
     <script>
+        let isSpeaking = false;
+        let currentAbortController = null;
+
         const updateDate = () => {
             const now = new Date();
             const optionsDay = { weekday: 'long' };
@@ -313,6 +343,11 @@
         const audioPlayer = document.getElementById('audioPlayer');
 
         const sendToJarvis = async (textMessage) => {
+            if (currentAbortController) {
+                currentAbortController.abort();
+            }
+            currentAbortController = new AbortController();
+
             hud.className = 'hud-container thinking';
             statusText.style.color = 'var(--text-main)';
             statusText.innerText = `"${textMessage}"\nVerarbeite...`;
@@ -324,6 +359,7 @@
                 const response = await fetch('/api/chat', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    signal: currentAbortController.signal,
                     body: JSON.stringify({
                         session_id: "voice_walk_01",
                         timestamp: new Date().toISOString(),
@@ -339,12 +375,16 @@
                     audioPlayer.src = "data:audio/mp3;base64," + data.audio_base64;
                     
                     audioPlayer.onended = () => {
+                        isSpeaking = false;
                         hud.className = 'hud-container';
                         statusText.style.color = 'var(--text-muted)';
                         statusText.innerText = "Bereit für Eingabe";
                     };
 
+                    isSpeaking = true;
+                    hud.className = 'hud-container speaking';
                     audioPlayer.play().catch(err => {
+                        isSpeaking = false;
                         statusText.style.color = 'var(--accent-red)';
                         statusText.innerText = "Audio-Wiedergabe blockiert.";
                         hud.className = 'hud-container';
@@ -355,9 +395,13 @@
                     statusText.innerText = "Bereit für Eingabe";
                 }
             } catch (error) {
-                statusText.style.color = 'var(--accent-red)';
-                statusText.innerText = "Verbindungsfehler zum Server.";
-                hud.className = 'hud-container';
+                if (error.name === 'AbortError') {
+                    console.log("Fetch aborted by user kill-switch.");
+                } else {
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = "Verbindungsfehler zum Server.";
+                    hud.className = 'hud-container';
+                }
             }
         };
 
@@ -374,7 +418,28 @@
             recognition.interimResults = false;
 
             micBtn.addEventListener('click', () => {
-                if(hud.classList.contains('listening') || hud.classList.contains('thinking')) return;
+                if (isSpeaking || hud.classList.contains('thinking')) {
+                    audioPlayer.pause();
+                    audioPlayer.currentTime = 0;
+                    isSpeaking = false;
+                    
+                    if (currentAbortController) {
+                        currentAbortController.abort();
+                    }
+                    
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = "Unterbrochen.";
+                    
+                    try {
+                        recognition.start();
+                        hud.className = 'hud-container listening';
+                    } catch(e) {
+                        console.log("Mikrofon läuft bereits.");
+                    }
+                    return;
+                }
+
+                if(hud.classList.contains('listening')) return;
 
                 audioPlayer.src = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
                 audioPlayer.play().catch(e => console.log("Unlock waiting..."));
