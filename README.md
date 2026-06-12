@@ -79,10 +79,20 @@ GOOGLE_API_KEY=your_gemini_key
 NOTION_API_KEY=your_notion_integration_secret
 NOTION_PAGE_ID=your_database_id
 
+# REQUIRED for any access beyond localhost (e.g. from your phone):
+# a shared secret the client must send as 'Authorization: Bearer <token>'.
+# Without it, the API only accepts requests from 127.0.0.1.
+# Generate one with: openssl rand -hex 32
+JARVIS_API_TOKEN=your_long_random_secret
+
 # Optional: working directory for sandboxed shell execution.
 # Defaults to the current user's $HOME. Point this at a scratch directory
 # if you'd rather Jarvis never touch your home folder by default.
 # JARVIS_SHELL_CWD=/Users/you/jarvis-sandbox
+
+# Optional: where the ChromaDB long-term memory lives.
+# Defaults to <project root>/jarvis_brain.
+# JARVIS_BRAIN_DIR=/path/to/jarvis_brain
 ```
 
 ### 4. Fire up the Engine
@@ -93,6 +103,17 @@ uvicorn app.main:app --reload
 
 Open: http://localhost:8000/docs  
 Access the interactive Swagger UI and test the API contracts.
+
+### 5. Run the Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests/ -v
+```
+
+The suite covers the security router: threat classification, shell
+metacharacter detection, sensitive-path read blocking, and the
+execution gate.
 
 ---
 

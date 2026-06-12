@@ -356,9 +356,13 @@
             if (textInput) textInput.value = '';
 
             try {
+                const headers = { 'Content-Type': 'application/json' };
+                const apiToken = localStorage.getItem('jarvis_api_token');
+                if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
+
                 const response = await fetch('/api/chat', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers,
                     signal: currentAbortController.signal,
                     body: JSON.stringify({
                         session_id: "voice_walk_01",
@@ -366,6 +370,18 @@
                         payload: { type: "text", content: textMessage }
                     })
                 });
+
+                if (response.status === 401) {
+                    const entered = prompt('Jarvis API-Token eingeben (JARVIS_API_TOKEN vom Server):');
+                    if (entered) {
+                        localStorage.setItem('jarvis_api_token', entered.trim());
+                        return sendToJarvis(textMessage); // retry with token
+                    }
+                    statusText.style.color = 'var(--accent-red)';
+                    statusText.innerText = 'Nicht autorisiert — kein API-Token.';
+                    hud.className = 'hud-container';
+                    return;
+                }
 
                 const data = await response.json();
                 statusText.style.color = 'var(--text-main)';

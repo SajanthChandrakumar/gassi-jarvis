@@ -109,7 +109,22 @@ def _build_system_prompt() -> str:
 from app.memory import save_memory, recall_memory, get_memory_stats
 
 
-def get_gemini_response(user_text: str) -> types.GenerateContentResponse:
+def _history_to_contents(history: list[dict]) -> list[types.Content]:
+    """Convert session history dicts ({'role', 'text'}) into Gemini Content turns."""
+    return [
+        types.Content(
+            role=turn["role"],
+            parts=[types.Part.from_text(text=turn["text"])],
+        )
+        for turn in history
+        if turn.get("text")
+    ]
+
+
+def get_gemini_response(
+    user_text: str,
+    history: list[dict] | None = None,
+) -> types.GenerateContentResponse:
     """
     Send user text to Gemini with all tools enabled and return the raw response.
 
@@ -120,13 +135,20 @@ def get_gemini_response(user_text: str) -> types.GenerateContentResponse:
 
     Args:
         user_text: The user's message text.
+        history: Prior conversation turns as dicts with 'role' ('user' | 'model')
+                 and 'text' keys. Gives the model multi-turn context.
 
     Returns:
         The raw Gemini GenerateContentResponse (caller inspects .text or .function_calls).
     """
+    contents: list[types.Content] = _history_to_contents(history or [])
+    contents.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
+    )
+
     response = client.models.generate_content(
         model=MODEL_NAME,
-        contents=user_text,
+        contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
             tools=[mac_controller_tool, take_screenshot_tool, save_memory, recall_memory, get_memory_stats],
@@ -134,6 +156,29 @@ def get_gemini_response(user_text: str) -> types.GenerateContentResponse:
         ),
     )
     return response
+
+
+def get_vision_response(user_text: str, image_bytes: bytes) -> str:
+    """
+    Analyze a screenshot with Gemini Vision, keeping the Jarvis persona.
+
+    Args:
+        user_text: The user's question about the screen.
+        image_bytes: JPEG-compressed screenshot bytes.
+
+    Returns:
+        The model's text answer (empty string if the model returned none).
+    """
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=[user_text, image_part],
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_prompt(),
+            temperature=0.1,
+        ),
+    )
+    return response.text or ""
 
 
 # ─── NLP Intent Analyzer for HitL Flow ───────────────────────────────────────
@@ -180,13 +225,14 @@ def analyze_user_intent(user_text: str, command: str) -> str:
             ),
         )
 
-        raw_intent = response.text.strip().upper()
+        raw_intent = (response.text or "").strip().upper()
 
-        # Strict extraction: only accept the exact valid tokens
-        if "APPROVE" in raw_intent:
-            return "APPROVE"
-        elif "DENY" in raw_intent:
+        # Fail closed: if the classifier output mentions both tokens,
+        # denial wins — never execute on an ambiguous answer.
+        if "DENY" in raw_intent:
             return "DENY"
+        elif "APPROVE" in raw_intent:
+            return "APPROVE"
         else:
             return "UNCLEAR"
 
