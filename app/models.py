@@ -6,6 +6,8 @@ the frontend (Layer 1) and the FastAPI gateway (Layer 2).
 """
 
 from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -18,9 +20,9 @@ class MessagePayload(BaseModel):
         content: The raw user input string.
     """
 
-    type: str = Field(
+    type: Literal["text", "audio"] = Field(
         ...,
-        description="Input type, e.g. 'text' or 'audio'.",
+        description="Input type: 'text' or 'audio'.",
         examples=["text"],
     )
     content: str = Field(
@@ -52,3 +54,20 @@ class ChatRequest(BaseModel):
         description="Client-side timestamp in ISO-8601 format.",
     )
     payload: MessagePayload
+
+
+class ChatResponse(BaseModel):
+    """
+    Top-level response schema for the /api/chat endpoint.
+
+    Attributes:
+        status: Always 'success' for 2xx responses; errors use HTTP status codes.
+        jarvis_response: Jarvis' text answer.
+        audio_base64: Base64-encoded MP3 of the TTS rendering (may be empty).
+        action_taken: Machine-readable description of what the backend did.
+    """
+
+    status: Literal["success"] = "success"
+    jarvis_response: str
+    audio_base64: str = ""
+    action_taken: str = "none"

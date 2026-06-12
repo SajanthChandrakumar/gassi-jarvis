@@ -12,13 +12,21 @@ Each session stores:
 Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 """
 
-import chromadb
+import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+import chromadb
 
 # ─── ChromaDB Long-Term Memory (Persistent) ───────────────────────────────────
 
-chroma_client = chromadb.PersistentClient(path="./jarvis_brain")
+# Anchored to the project root (not the process CWD) so the same brain is
+# loaded no matter where uvicorn is launched from. Override via JARVIS_BRAIN_DIR.
+_DEFAULT_BRAIN_DIR = Path(__file__).resolve().parent.parent / "jarvis_brain"
+BRAIN_DIR = os.environ.get("JARVIS_BRAIN_DIR", str(_DEFAULT_BRAIN_DIR))
+
+chroma_client = chromadb.PersistentClient(path=BRAIN_DIR)
 collection = chroma_client.get_or_create_collection(name="long_term_memory")
 
 
@@ -106,6 +114,25 @@ def get_session(session_id: str) -> dict[str, Any]:
         }
 
     return _active_sessions[session_id]
+
+
+# Cap stored turns so the Gemini context can't grow without bound.
+MAX_HISTORY_ENTRIES: int = 20
+
+
+def record_turn(session_id: str, user_text: str, model_text: str) -> None:
+    """
+    Append a completed user/model exchange to the session history.
+
+    Keeps only the most recent MAX_HISTORY_ENTRIES entries so long walks
+    don't blow up the prompt size.
+    """
+    session = get_session(session_id)
+    session["history"].append({"role": "user", "text": user_text})
+    session["history"].append({"role": "model", "text": model_text})
+
+    if len(session["history"]) > MAX_HISTORY_ENTRIES:
+        session["history"] = session["history"][-MAX_HISTORY_ENTRIES:]
 
 
 def clear_pending_command(session_id: str) -> None:

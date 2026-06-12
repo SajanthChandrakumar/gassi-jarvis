@@ -16,19 +16,20 @@ All business logic is delegated to the respective microservice modules:
     - security.py → Command threat classification + subprocess execution
 """
 
-import os
-import subprocess
 import base64
+import os
+import re
+import secrets
+import subprocess
 
 import edge_tts
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
-from google.genai import types
 from app.notion_service import save_protocol_to_notion
 
-from app.models import ChatRequest
-from app.memory import get_session, clear_pending_command
-from app.agent import get_gemini_response, analyze_user_intent, client, MODEL_NAME
+from app.models import ChatRequest, ChatResponse
+from app.memory import get_session, clear_pending_command, record_turn
+from app.agent import get_gemini_response, get_vision_response, analyze_user_intent
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
 
@@ -43,6 +44,46 @@ app = FastAPI(
 )
 
 TTS_VOICE = "de-DE-KillianNeural"
+
+# App names passed to AppleScript may only contain these characters.
+# Blocks quote/backslash breakouts into arbitrary AppleScript.
+_SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,64}$")
+
+
+# ─── Auth ─────────────────────────────────────────────────────────────────────
+
+API_TOKEN = os.environ.get("JARVIS_API_TOKEN", "")
+
+_LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
+
+if not API_TOKEN:
+    print(
+        "[AUTH] WARNUNG: JARVIS_API_TOKEN ist nicht gesetzt. "
+        "/api/chat akzeptiert nur Requests von localhost. "
+        "Für Zugriff vom Handy: Token in .env setzen."
+    )
+
+
+async def verify_token(request: Request) -> None:
+    """
+    Gate /api/chat behind a bearer token.
+
+    If JARVIS_API_TOKEN is unset, only localhost may connect (safe local dev).
+    If set, every request must carry 'Authorization: Bearer <token>'.
+    """
+    if not API_TOKEN:
+        client_host = request.client.host if request.client else ""
+        if client_host not in _LOCALHOST_ADDRS:
+            raise HTTPException(
+                status_code=401,
+                detail="Remote-Zugriff erfordert JARVIS_API_TOKEN auf dem Server.",
+            )
+        return
+
+    auth_header = request.headers.get("Authorization", "")
+    provided = auth_header.removeprefix("Bearer ").strip()
+    if not provided or not secrets.compare_digest(provided, API_TOKEN):
+        raise HTTPException(status_code=401, detail="Ungültiger oder fehlender API-Token.")
 
 
 # ─── Helper: Text-to-Speech ──────────────────────────────────────────────────
@@ -116,7 +157,7 @@ async def get_index():
     return FileResponse(index_path)
 
 
-@app.post("/api/chat")
+@app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 async def chat_with_jarvis(request: ChatRequest):
     """
     Main chat endpoint implementing the full Jarvis request lifecycle.
@@ -124,13 +165,18 @@ async def chat_with_jarvis(request: ChatRequest):
     Flow:
         Step 1 — HitL Interceptor: If a dangerous command is pending,
                  classify user intent (APPROVE / DENY / UNCLEAR).
-        Step 2 — LLM Call: Send user text to Gemini.
+        Step 2 — LLM Call: Send user text to Gemini (with session history).
         Step 3 — Tool Executor: Handle function_calls from Gemini.
         Step 4 — Text Passthrough: Return plain text if no tools fired.
     """
     user_text = request.payload.content.strip()
     session_id = request.session_id
     session = get_session(session_id)
+
+    async def respond(text: str, action: str = "none") -> dict:
+        """Record the exchange in session history, then build the response."""
+        record_turn(session_id, user_text, text)
+        return await respond(text=text, action=action)
 
     try:
         # ──────────────────────────────────────────────────────────────────
@@ -152,7 +198,7 @@ async def chat_with_jarvis(request: ChatRequest):
                     f"Verstanden. Befehl wird ausgeführt.\n\n"
                     f"Ergebnis:\n{output}"
                 )
-                return await _build_response(
+                return await respond(
                     text=response_text,
                     action=f"hitl_approved: {pending_cmd}",
                 )
@@ -160,14 +206,14 @@ async def chat_with_jarvis(request: ChatRequest):
             elif intent == "DENY":
                 # User hat abgelehnt → Befehl verwerfen
                 clear_pending_command(session_id)
-                return await _build_response(
+                return await respond(
                     text="Alles klar. Befehl wurde abgebrochen. Ich führe nichts aus.",
                     action="hitl_denied",
                 )
 
             else:
                 # Intent unklar → nochmal nachfragen
-                return await _build_response(
+                return await respond(
                     text=(
                         f"Ich konnte deine Antwort nicht eindeutig zuordnen. "
                         f"Der ausstehende Befehl ist: '{pending_cmd}'. "
@@ -182,7 +228,7 @@ async def chat_with_jarvis(request: ChatRequest):
         print(f"[MAIN] User-Input an Gemini: '{user_text}'")
 
         try:
-            response = get_gemini_response(user_text)
+            response = get_gemini_response(user_text, history=session["history"])
         except Exception as e:
             error_str = str(e)
             print(f"[ERROR] Gemini API-Fehler: {error_str}")
@@ -202,7 +248,7 @@ async def chat_with_jarvis(request: ChatRequest):
                     "Meine Serververbindung zu Google ist gerade überlastet. "
                     "Lass uns kurz eine Minute warten."
                 )
-                return await _build_response(
+                return await respond(
                     text=fallback_text,
                     action="api_rate_limit_handled",
                 )
@@ -228,6 +274,18 @@ async def chat_with_jarvis(request: ChatRequest):
 
                         # ── 3a: open_app → Direct execution via osascript ──
                         if action_type == "open_app":
+                            # Strict allowlist on the app name: anything with
+                            # quotes/backslashes could break out of the
+                            # AppleScript string and run arbitrary script,
+                            # bypassing the security router entirely.
+                            if not _SAFE_APP_NAME.match(payload):
+                                return await respond(
+                                    text=(
+                                        f"Den App-Namen '{payload}' habe ich "
+                                        f"abgelehnt — er enthält unzulässige Zeichen."
+                                    ),
+                                    action="open_app_rejected",
+                                )
                             try:
                                 subprocess.run(
                                     [
@@ -240,17 +298,17 @@ async def chat_with_jarvis(request: ChatRequest):
                                     timeout=10,
                                 )
                                 response_text = f"Erledigt. {payload} wurde geöffnet."
-                                return await _build_response(
+                                return await respond(
                                     text=response_text,
                                     action=f"open_app: {payload}",
                                 )
                             except subprocess.TimeoutExpired:
-                                return await _build_response(
+                                return await respond(
                                     text=f"Timeout beim Öffnen von {payload}.",
                                     action="open_app_timeout",
                                 )
                             except OSError as e:
-                                return await _build_response(
+                                return await respond(
                                     text=f"Fehler beim Öffnen von {payload}: {e}",
                                     action="open_app_error",
                                 )
@@ -274,7 +332,7 @@ async def chat_with_jarvis(request: ChatRequest):
                                     f"Soll ich ihn trotzdem ausführen? "
                                     f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
                                 )
-                                return await _build_response(
+                                return await respond(
                                     text=warning_text,
                                     action=f"hitl_pending: {payload}",
                                 )
@@ -284,13 +342,13 @@ async def chat_with_jarvis(request: ChatRequest):
                                 response_text = (
                                     f"Befehl ausgeführt.\n\nErgebnis:\n{output}"
                                 )
-                                return await _build_response(
+                                return await respond(
                                     text=response_text,
                                     action=f"shell_executed: {payload}",
                                 )
 
                         else:
-                            return await _build_response(
+                            return await respond(
                                 text=f"Unbekannter Aktionstyp: {action_type}",
                                 action="unknown_action_type",
                             )
@@ -300,32 +358,30 @@ async def chat_with_jarvis(request: ChatRequest):
                         try:
                             image_bytes = capture_and_compress_screen()
                         except (PermissionError, FileNotFoundError) as e:
-                            return await _build_response(
+                            return await respond(
                                 text=str(e),
                                 action="screenshot_failed",
                             )
                         except Exception as e:
-                            return await _build_response(
+                            return await respond(
                                 text=f"Unerwarteter Fehler beim Screenshot: {e}",
                                 action="screenshot_error",
                             )
                         
                         print("[VISION] Screenshot erstellt. Sende an Gemini Vision...")
-                        image_part = types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-                        
+
                         try:
-                            vision_response = client.models.generate_content(
-                                model=MODEL_NAME,
-                                contents=[user_text, image_part]
-                            )
-                            vision_text = vision_response.text if vision_response.text else "Ich konnte das Bild leider nicht auswerten."
-                            return await _build_response(
+                            vision_text = get_vision_response(user_text, image_bytes)
+                            if not vision_text:
+                                vision_text = "Ich konnte das Bild leider nicht auswerten."
+                            return await respond(
                                 text=vision_text,
                                 action="vision_screenshot_analyzed",
                             )
                         except Exception as e:
-                            return await _build_response(
-                                text=f"Fehler bei der Bildanalyse: {e}",
+                            print(f"[VISION] Bildanalyse fehlgeschlagen: {e}")
+                            return await respond(
+                                text="Die Bildanalyse ist leider fehlgeschlagen.",
                                 action="vision_analysis_error",
                             )
 
@@ -341,7 +397,7 @@ async def chat_with_jarvis(request: ChatRequest):
         # STEP 4: Text Passthrough — No function calls, return LLM text
         # ──────────────────────────────────────────────────────────────────
         response_text = response.text if response.text else "Ich konnte leider keine Antwort generieren."
-        return await _build_response(
+        return await respond(
             text=response_text,
             action="text_response",
         )

@@ -4,5 +4,11 @@ __pycache__/
 *.pyc
 .env
 .git/
+jarvis_brain/
+.pytest_cache/
+.vscode/
+.idea/
+.DS_Store
 .gitignore
 README.md
+tests/
