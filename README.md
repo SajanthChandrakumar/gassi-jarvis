@@ -10,8 +10,9 @@
 This project is a technical showcase of a modern AI-agent architecture. It bridges the gap between raw LLM reasoning and professional software engineering standards.
 
 - **API Contract Design:** Strict JSON validation using Pydantic to ensure data integrity.  
-- **Stateful AI & RAG:** Custom in-memory session management combined with a persistent ChromaDB vector store for long-term memory retrieval.  
+- **Stateful AI & RAG:** Multi-turn conversation history via in-memory session management, combined with a persistent ChromaDB vector store for long-term memory retrieval.  
 - **Function Calling & LAM:** Autonomous execution of Python tools (Notion API, OS Commands) driven by the LLM.  
+- **UI & Voice:** A polished frontend PWA with reactive microphone animations and instant Kill-Switch interruptibility.
 - **Layered Command Safety:** A Human-in-the-Loop (HitL) security router classifies every shell command by threat level, blocks reads from sensitive paths (SSH keys, `.env`, `.aws/credentials`, …), and gates anything destructive behind explicit voice approval.
 - **Modern Stack:** Built on the Google Gemini infrastructure for high-speed reasoning and Edge-TTS for low-latency voice output.  
 
@@ -156,6 +157,7 @@ All communication happens via the `/api/chat` endpoint.
 - [x] Phase 5: Persistent Long-Term Memory via local ChromaDB (RAG Pipeline)  
 - [x] Phase 6: Refactor backend into modules and implement layered HitL Security Router for macOS execution (LAM)
 - [x] Phase 7: Project Argus - Multimodal Vision capabilities (macOS screenshots & Gemini Vision integration)
+- [x] Phase 8: Hardened Security, Bearer Token Auth, UI Redesign, and Multi-Turn Conversation History
 
 ---
 
