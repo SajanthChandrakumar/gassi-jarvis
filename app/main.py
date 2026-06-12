@@ -187,8 +187,17 @@ async def chat_with_jarvis(request: ChatRequest):
             error_str = str(e)
             print(f"[ERROR] Gemini API-Fehler: {error_str}")
 
-            # Handle Google overload (503) / quota limits gracefully
-            if "503" in error_str or "demand" in error_str or "quota" in error_str.lower():
+            # Treat any 5xx / 429 / quota / overload signal as a transient
+            # upstream issue and degrade gracefully instead of 500ing the client.
+            status_code = getattr(e, "status_code", None) or getattr(e, "code", None)
+            transient = (
+                status_code in {429, 500, 502, 503, 504}
+                or "quota" in error_str.lower()
+                or "rate" in error_str.lower()
+                or "overload" in error_str.lower()
+                or "unavailable" in error_str.lower()
+            )
+            if transient:
                 fallback_text = (
                     "Meine Serververbindung zu Google ist gerade überlastet. "
                     "Lass uns kurz eine Minute warten."
@@ -198,9 +207,10 @@ async def chat_with_jarvis(request: ChatRequest):
                     action="api_rate_limit_handled",
                 )
 
+            # Don't leak internal exception text to the client.
             raise HTTPException(
                 status_code=500,
-                detail=f"Brain connection lost: {error_str}",
+                detail="Brain connection lost.",
             )
 
         # ──────────────────────────────────────────────────────────────────
@@ -341,7 +351,8 @@ async def chat_with_jarvis(request: ChatRequest):
         raise
     except Exception as e:
         print(f"[FATAL] Unbehandelter Fehler im Chat-Endpoint: {e}")
+        # Avoid surfacing internal exception details over the wire.
         raise HTTPException(
             status_code=500,
-            detail=f"Interner Serverfehler: {str(e)}",
+            detail="Interner Serverfehler.",
         )

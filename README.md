@@ -12,7 +12,7 @@ This project is a technical showcase of a modern AI-agent architecture. It bridg
 - **API Contract Design:** Strict JSON validation using Pydantic to ensure data integrity.  
 - **Stateful AI & RAG:** Custom in-memory session management combined with a persistent ChromaDB vector store for long-term memory retrieval.  
 - **Function Calling & LAM:** Autonomous execution of Python tools (Notion API, OS Commands) driven by the LLM.  
-- **Zero-Trust Security:** A Human-in-the-Loop (HitL) security router to safely execute terminal commands locally on macOS.
+- **Layered Command Safety:** A Human-in-the-Loop (HitL) security router classifies every shell command by threat level, blocks reads from sensitive paths (SSH keys, `.env`, `.aws/credentials`, …), and gates anything destructive behind explicit voice approval.
 - **Modern Stack:** Built on the Google Gemini infrastructure for high-speed reasoning and Edge-TTS for low-latency voice output.  
 
 ---
@@ -78,6 +78,11 @@ Create a `.env` file in the root directory:
 GOOGLE_API_KEY=your_gemini_key
 NOTION_API_KEY=your_notion_integration_secret
 NOTION_PAGE_ID=your_database_id
+
+# Optional: working directory for sandboxed shell execution.
+# Defaults to the current user's $HOME. Point this at a scratch directory
+# if you'd rather Jarvis never touch your home folder by default.
+# JARVIS_SHELL_CWD=/Users/you/jarvis-sandbox
 ```
 
 ### 4. Fire up the Engine
@@ -128,7 +133,7 @@ All communication happens via the `/api/chat` endpoint.
 - [x] Phase 3: Implement Voice-to-Text (STT) and Text-to-Voice (TTS) via Edge-TTS  
 - [x] Phase 4: Notion API Integration for automated strategy protocols  
 - [x] Phase 5: Persistent Long-Term Memory via local ChromaDB (RAG Pipeline)  
-- [x] Phase 6: Refactor backend into Microservices and implement Zero-Trust HitL Security Router for macOS execution (LAM)
+- [x] Phase 6: Refactor backend into modules and implement layered HitL Security Router for macOS execution (LAM)
 - [x] Phase 7: Project Argus - Multimodal Vision capabilities (macOS screenshots & Gemini Vision integration)
 
 ---
