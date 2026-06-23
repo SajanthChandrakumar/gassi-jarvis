@@ -17,6 +17,7 @@ All business logic is delegated to the respective microservice modules:
 """
 
 import base64
+import logging
 import os
 import re
 import secrets
@@ -25,13 +26,20 @@ import subprocess
 import edge_tts
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
-from app.notion_service import save_protocol_to_notion
+from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
+from app.logging_config import setup_logging
 from app.models import ChatRequest, ChatResponse
 from app.memory import get_session, clear_pending_command, record_turn
 from app.agent import get_gemini_response, get_vision_response, analyze_user_intent
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
+
+setup_logging()
+log = logging.getLogger(__name__)
 
 # ─── Server Setup ─────────────────────────────────────────────────────────────
 
@@ -41,6 +49,28 @@ app = FastAPI(
     title="Gassi-Jarvis Gateway",
     description="Voice-controlled AI Assistant & LAM — FastAPI Backend",
     version="2.0.0",
+)
+
+# ─── Rate limiting ────────────────────────────────────────────────────────────
+# Keyed by remote IP. Caps brute-force token guessing on /api/chat.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# ─── CORS ─────────────────────────────────────────────────────────────────────
+# Comma-separated list of allowed origins for the PWA frontend.
+# Defaults to localhost only — set JARVIS_ALLOWED_ORIGINS to your phone/PWA URL.
+_origins_env = os.environ.get("JARVIS_ALLOWED_ORIGINS", "")
+_allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()] or [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 TTS_VOICE = "de-DE-KillianNeural"
@@ -57,8 +87,8 @@ API_TOKEN = os.environ.get("JARVIS_API_TOKEN", "")
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
 
 if not API_TOKEN:
-    print(
-        "[AUTH] WARNUNG: JARVIS_API_TOKEN ist nicht gesetzt. "
+    log.warning(
+        "JARVIS_API_TOKEN ist nicht gesetzt. "
         "/api/chat akzeptiert nur Requests von localhost. "
         "Für Zugriff vom Handy: Token in .env setzen."
     )
@@ -112,7 +142,7 @@ async def _generate_tts_audio(text: str) -> str:
         return base64.b64encode(audio_data).decode("utf-8")
 
     except Exception as e:
-        print(f"[TTS] Audio-Generierung fehlgeschlagen: {e}")
+        log.error("TTS Audio-Generierung fehlgeschlagen: %s", e)
         return ""
 
 
@@ -158,7 +188,8 @@ async def get_index():
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
-async def chat_with_jarvis(request: ChatRequest):
+@limiter.limit("20/minute")
+async def chat_with_jarvis(request: Request, chat: ChatRequest):
     """
     Main chat endpoint implementing the full Jarvis request lifecycle.
 
@@ -169,14 +200,14 @@ async def chat_with_jarvis(request: ChatRequest):
         Step 3 — Tool Executor: Handle function_calls from Gemini.
         Step 4 — Text Passthrough: Return plain text if no tools fired.
     """
-    user_text = request.payload.content.strip()
-    session_id = request.session_id
+    user_text = chat.payload.content.strip()
+    session_id = chat.session_id
     session = get_session(session_id)
 
     async def respond(text: str, action: str = "none") -> dict:
         """Record the exchange in session history, then build the response."""
         record_turn(session_id, user_text, text)
-        return await respond(text=text, action=action)
+        return await _build_response(text=text, action=action)
 
     try:
         # ──────────────────────────────────────────────────────────────────
@@ -184,10 +215,10 @@ async def chat_with_jarvis(request: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         if session["pending_command"] is not None:
             pending_cmd = session["pending_command"]
-            print(f"[HitL] Ausstehender Befehl: '{pending_cmd}' — Analysiere Antwort...")
+            log.info("HitL ausstehender Befehl: %r — analysiere Antwort", pending_cmd)
 
             intent = analyze_user_intent(user_text, pending_cmd)
-            print(f"[HitL] Intent-Klassifikation: {intent}")
+            log.info("HitL Intent-Klassifikation: %s", intent)
 
             if intent == "APPROVE":
                 # User hat zugestimmt → Befehl mit force=True ausführen
@@ -225,13 +256,13 @@ async def chat_with_jarvis(request: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 2: LLM Call — Send to Gemini
         # ──────────────────────────────────────────────────────────────────
-        print(f"[MAIN] User-Input an Gemini: '{user_text}'")
+        log.debug("User-Input an Gemini: %r", user_text)
 
         try:
             response = get_gemini_response(user_text, history=session["history"])
         except Exception as e:
             error_str = str(e)
-            print(f"[ERROR] Gemini API-Fehler: {error_str}")
+            log.error("Gemini API-Fehler: %s", error_str)
 
             # Treat any 5xx / 429 / quota / overload signal as a transient
             # upstream issue and degrade gracefully instead of 500ing the client.
@@ -266,7 +297,7 @@ async def chat_with_jarvis(request: ChatRequest):
             for part in response.candidates[0].content.parts:
                 if part.function_call:
                     fc = part.function_call
-                    print(f"[TOOL] Function Call erkannt: {fc.name} → {fc.args}")
+                    log.info("Tool Function Call: %s → %s", fc.name, fc.args)
 
                     if fc.name == "execute_mac_command":
                         action_type = fc.args.get("action_type", "")
@@ -316,9 +347,9 @@ async def chat_with_jarvis(request: ChatRequest):
                         # ── 3b: shell_command → Security router ────────────
                         elif action_type == "shell_command":
                             threat_level = evaluate_security_level(payload)
-                            print(
-                                f"[SECURITY] Befehl: '{payload}' → "
-                                f"Threat Level: {threat_level}"
+                            log.info(
+                                "Security: cmd=%r → threat_level=%s",
+                                payload, threat_level,
                             )
 
                             if threat_level >= 2:
@@ -354,7 +385,7 @@ async def chat_with_jarvis(request: ChatRequest):
                             )
 
                     elif fc.name == "take_screenshot":
-                        print("[VISION] Nehme Screenshot auf...")
+                        log.info("Vision: nehme Screenshot auf")
                         try:
                             image_bytes = capture_and_compress_screen()
                         except (PermissionError, FileNotFoundError) as e:
@@ -367,8 +398,8 @@ async def chat_with_jarvis(request: ChatRequest):
                                 text=f"Unerwarteter Fehler beim Screenshot: {e}",
                                 action="screenshot_error",
                             )
-                        
-                        print("[VISION] Screenshot erstellt. Sende an Gemini Vision...")
+
+                        log.info("Vision: Screenshot erstellt, sende an Gemini Vision")
 
                         try:
                             vision_text = get_vision_response(user_text, image_bytes)
@@ -379,19 +410,11 @@ async def chat_with_jarvis(request: ChatRequest):
                                 action="vision_screenshot_analyzed",
                             )
                         except Exception as e:
-                            print(f"[VISION] Bildanalyse fehlgeschlagen: {e}")
+                            log.error("Vision Bildanalyse fehlgeschlagen: %s", e)
                             return await respond(
                                 text="Die Bildanalyse ist leider fehlgeschlagen.",
                                 action="vision_analysis_error",
                             )
-
-                    # Handle memory tools that Gemini called automatically
-                    elif fc.name in ("save_memory", "recall_memory", "get_memory_stats"):
-                        # These are handled internally by the genai SDK
-                        # when using automatic function calling.
-                        # If we reach here, the response.text should contain
-                        # the final answer after tool execution.
-                        pass
 
         # ──────────────────────────────────────────────────────────────────
         # STEP 4: Text Passthrough — No function calls, return LLM text
@@ -406,7 +429,7 @@ async def chat_with_jarvis(request: ChatRequest):
         # Re-raise FastAPI HTTP exceptions as-is
         raise
     except Exception as e:
-        print(f"[FATAL] Unbehandelter Fehler im Chat-Endpoint: {e}")
+        log.exception("Unbehandelter Fehler im Chat-Endpoint: %s", e)
         # Avoid surfacing internal exception details over the wire.
         raise HTTPException(
             status_code=500,

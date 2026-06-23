@@ -7,12 +7,15 @@ Handles all communication with the Google Gemini API:
     - NLP-based intent analysis for HitL approval/denial classification.
 """
 
+import logging
 import os
 
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from datetime import datetime
+
+log = logging.getLogger(__name__)
 
 # ─── Initialization ───────────────────────────────────────────────────────────
 
@@ -237,5 +240,5 @@ def analyze_user_intent(user_text: str, command: str) -> str:
             return "UNCLEAR"
 
     except Exception as e:
-        print(f"[AGENT] Intent-Analyse fehlgeschlagen: {e}")
+        log.error("Intent-Analyse fehlgeschlagen: %s", e)
         return "UNCLEAR"

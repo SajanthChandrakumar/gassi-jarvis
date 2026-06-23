@@ -6,19 +6,23 @@ Handles taking macOS screenshots and compressing them for Gemini Vision.
 import os
 import io
 import subprocess
+import tempfile
 from PIL import Image
 
 def capture_and_compress_screen() -> bytes:
     """
     Takes a silent screenshot of the macOS desktop, compresses it heavily,
     and returns the JPEG bytes.
-    
+
     Raises:
         PermissionError if macOS screen recording permissions are missing.
         FileNotFoundError if the temporary screenshot file was not created.
     """
-    tmp_path = "/tmp/jarvis_vision.png"
-    
+    # mkstemp returns an exclusively-created file with a random name, so a
+    # symlink planted at a predictable path can't redirect the screenshot write.
+    fd, tmp_path = tempfile.mkstemp(prefix="jarvis_vision_", suffix=".png")
+    os.close(fd)
+
     try:
         # -x: silent (no shutter sound)
         subprocess.run(
@@ -28,6 +32,10 @@ def capture_and_compress_screen() -> bytes:
             check=True
         )
     except subprocess.CalledProcessError as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
         raise PermissionError(
             "Fehler beim Erstellen des Screenshots. Bitte überprüfe die "
             "macOS-Berechtigungen für 'Bildschirmaufnahme' (Screen Recording) "
@@ -36,7 +44,7 @@ def capture_and_compress_screen() -> bytes:
 
     if not os.path.exists(tmp_path):
         raise FileNotFoundError(
-            "Screenshot konnte nicht unter /tmp/jarvis_vision.png gespeichert werden."
+            "Screenshot konnte nicht gespeichert werden."
         )
 
     # Compress using Pillow
