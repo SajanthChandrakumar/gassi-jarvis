@@ -327,6 +327,44 @@
         let isSpeaking = false;
         let currentAbortController = null;
 
+        // ─── Token storage with TTL ────────────────────────────────────────
+        // Token expires after this many ms — re-prompt on next use.
+        // 12 h is a reasonable balance: doesn't pester during a day of use,
+        // but a stolen unlocked phone loses access by tomorrow morning.
+        const TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
+        const TOKEN_KEY = 'jarvis_api_token_v2';
+
+        function storeToken(token) {
+            localStorage.setItem(TOKEN_KEY, JSON.stringify({
+                token,
+                savedAt: Date.now()
+            }));
+        }
+
+        function getStoredToken() {
+            // Clean up the old un-expiring key from previous versions.
+            localStorage.removeItem('jarvis_api_token');
+
+            const raw = localStorage.getItem(TOKEN_KEY);
+            if (!raw) return null;
+            try {
+                const { token, savedAt } = JSON.parse(raw);
+                if (!token || !savedAt) return null;
+                if (Date.now() - savedAt > TOKEN_TTL_MS) {
+                    localStorage.removeItem(TOKEN_KEY);
+                    return null;
+                }
+                return token;
+            } catch {
+                localStorage.removeItem(TOKEN_KEY);
+                return null;
+            }
+        }
+
+        function clearStoredToken() {
+            localStorage.removeItem(TOKEN_KEY);
+        }
+
         const updateDate = () => {
             const now = new Date();
             const optionsDay = { weekday: 'long' };
@@ -357,7 +395,7 @@
 
             try {
                 const headers = { 'Content-Type': 'application/json' };
-                const apiToken = localStorage.getItem('jarvis_api_token');
+                const apiToken = getStoredToken();
                 if (apiToken) headers['Authorization'] = 'Bearer ' + apiToken;
 
                 const response = await fetch('/api/chat', {
@@ -372,9 +410,10 @@
                 });
 
                 if (response.status === 401) {
+                    clearStoredToken();
                     const entered = prompt('Jarvis API-Token eingeben (JARVIS_API_TOKEN vom Server):');
                     if (entered) {
-                        localStorage.setItem('jarvis_api_token', entered.trim());
+                        storeToken(entered.trim());
                         return sendToJarvis(textMessage); // retry with token
                     }
                     statusText.style.color = 'var(--accent-red)';

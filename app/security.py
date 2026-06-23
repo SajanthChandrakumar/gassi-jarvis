@@ -36,7 +36,7 @@ DANGEROUS_KEYWORDS: set[str] = {
 }
 
 DANGEROUS_SYMBOLS: tuple[str, ...] = (
-    "|", ">", ">>", "<", "&", "&&", "||", ";", "`", "$(", "${", "\n",
+    "|", ">", ">>", "<", "&", "&&", "||", ";", "`", "$(", "${", "\n", "\r",
 )
 
 HARMLESS_COMMANDS: set[str] = {
@@ -63,8 +63,15 @@ SENSITIVE_PATH_FRAGMENTS: tuple[str, ...] = (
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
     "credentials", "secrets", "keychain",
     "/etc/shadow", "/etc/sudoers", "/etc/master.passwd",
+    "/etc/passwd", "/etc/group",
     "/private/etc/shadow", "/private/etc/sudoers",
+    "/private/etc/passwd", "/private/etc/group",
     "/private/var/db/sudo",
+    # macOS user-data stores frequently targeted for credential exfiltration.
+    "library/cookies", "library/messages", "library/keychains",
+    "library/application support", "library/mail",
+    "library/safari", "library/group containers",
+    "logins.json",  # Firefox credential store
 )
 
 SENSITIVE_SUFFIXES: tuple[str, ...] = (
@@ -114,6 +121,12 @@ def _is_sensitive_path(arg: str) -> bool:
     return False
 
 
+_FIND_PATH_VALUED_FLAGS: set[str] = {
+    "-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename",
+    "-lname", "-ilname", "-regex", "-iregex",
+}
+
+
 def _readonly_args_are_safe(base_command: str, tokens: list[str]) -> bool:
     """
     For a read-only command, walk its positional args and reject if any
@@ -122,9 +135,24 @@ def _readonly_args_are_safe(base_command: str, tokens: list[str]) -> bool:
     args = tokens[1:]
 
     if base_command == "find":
-        for tok in args:
+        # `find` is special: it has flags whose *values* are path-like
+        # (e.g. `-name id_rsa` searches for id_rsa). Scan those values too.
+        skip_next = False
+        for i, tok in enumerate(args):
+            if skip_next:
+                skip_next = False
+                if _is_sensitive_path(tok):
+                    return False
+                continue
             if tok in FIND_DANGEROUS_FLAGS:
                 return False
+            if tok in _FIND_PATH_VALUED_FLAGS:
+                skip_next = True
+                continue
+            # Bare positional → treat as a path root and check it.
+            if not tok.startswith("-") and _is_sensitive_path(tok):
+                return False
+        return True
 
     for tok in args:
         # Skip option flags (-l, --color, etc.); they aren't paths.

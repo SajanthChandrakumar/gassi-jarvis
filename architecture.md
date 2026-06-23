@@ -1,31 +1,33 @@
 # Gassi-Jarvis System Architecture
 
-The Gassi-Jarvis backend operates on a decoupled, 5-layer microservice architecture. It combines a Voice-First UI with a robust Layered Security Router that acts as a Large Action Model (LAM) for macOS automation.
+The Gassi-Jarvis backend operates on a decoupled, layered architecture. It combines a Voice-First UI with a Layered Security Router that acts as a Large Action Model (LAM) for macOS automation, gated behind bearer-token auth and a Human-in-the-Loop approval flow.
 
 ## Microservice Architecture Diagram
 
 ```mermaid
 graph TD
-    CLIENT["Frontend (PWA/Voice)"] -->|POST /api/chat| MAIN["main.py<br/>(Gateway & Route Controller)"]
-    
+    CLIENT["Frontend (PWA / Voice)"] -->|POST /api/chat<br/>Bearer token| AUTH["main.py<br/>(Auth + Rate Limit + CORS)"]
+    AUTH --> MAIN["main.py<br/>(Gateway & Route Controller)"]
+
     subgraph FastAPI Backend
         MAIN -->|Step 1: HitL Check| MEMORY["memory.py<br/>(Session State & ChromaDB)"]
         MAIN -->|Step 1: Intent Check| AGENT_NLP["agent.py<br/>(NLP Intent Classifier)"]
         MAIN -->|Step 2: LLM Call| AGENT_LLM["agent.py<br/>(Gemini Orchestrator)"]
-        
+
         MAIN -->|Step 3a: open_app| OSASCRIPT["osascript<br/>(AppleScript Execution)"]
         MAIN -->|Step 3b: shell_command| SECURITY["security.py<br/>(Layered Security Router)"]
         MAIN -->|Step 3c: take_screenshot| VISION["vision.py<br/>(macOS Screencapture)"]
-        
+
         SECURITY -->|Level 0-1: Safe| EXEC["subprocess.run()"]
         SECURITY -->|Level 2: Danger| MEMORY
         MEMORY -.->|Saves pending_command| MAIN
-        
+
         MAIN -->|Validate In/Out| MODELS["models.py<br/>(Pydantic v2 Schemas)"]
+        MAIN -.->|Structured logs| LOG["logging_config.py"]
     end
-    
+
     AGENT_LLM <--> GEMINI["Google Gemini 2.5 API"]
-    AGENT_LLM <--> TOOLS["Tools: mac_controller_tool<br/>save_memory, recall_memory"]
+    AGENT_LLM <--> TOOLS["Tools: mac_controller_tool<br/>take_screenshot<br/>save_memory, recall_memory"]
 ```
 
 ---
@@ -34,13 +36,25 @@ graph TD
 
 | File | Primary Responsibility | Key Components |
 |------|------------------------|----------------|
-| **`main.py`** | **Gateway & Controller** | Single entry point. Manages the 4-step request lifecycle (HitL Interceptor → LLM Call → Tool Executor → TTS/Response). Delegates all logic to other modules. |
-| **`models.py`** | **API Contract** | Enforces strict JSON validation using Pydantic v2 (`MessagePayload`, `ChatRequest`). |
-| **`memory.py`** | **Session & RAG** | Manages ephemeral session state (history, pending HitL commands) and persistent long-term memory via ChromaDB vector store. |
-| **`agent.py`** | **LLM Orchestrator** | Handles all Google Gemini integrations. Declares tools (`mac_controller_tool`), generates responses, and acts as an NLP intent classifier (APPROVE/DENY/UNCLEAR). |
-| **`security.py`** | **Layered Security Router** | Evaluates shell commands via `evaluate_security_level`. Sandboxes execution via `subprocess.run()`. |
-| **`notion_service.py`**| **Knowledge Base** | Direct integration with the Notion API to save formal protocols and search old notes. |
-| **`vision.py`** | **Vision Module** | Executes macOS `screencapture`, drops alpha channels, and compresses images via Pillow for API latency reduction. |
+| **`main.py`** | **Gateway & Controller** | Single entry point. Enforces bearer-token auth (`JARVIS_API_TOKEN`), per-IP rate limiting (SlowAPI), and a CORS allowlist. Manages the 4-step request lifecycle (HitL Interceptor → LLM Call → Tool Executor → TTS/Response). |
+| **`models.py`** | **API Contract** | Enforces strict JSON validation using Pydantic v2 (`MessagePayload`, `ChatRequest`, `ChatResponse`). |
+| **`memory.py`** | **Session & RAG** | Manages ephemeral session state (multi-turn history, pending HitL commands) and persistent long-term memory via ChromaDB vector store. |
+| **`agent.py`** | **LLM Orchestrator** | Handles all Google Gemini integrations. Manages multi-turn conversation contexts, executes vision analysis, and acts as an NLP intent classifier. |
+| **`security.py`** | **Layered Security Router** | Evaluates shell commands via `evaluate_security_level`. Sandboxes execution via `subprocess.run()` with a configurable working directory. |
+| **`vision.py`** | **Vision Module** | Executes macOS `screencapture` against a `tempfile.mkstemp` path (symlink-race safe), drops alpha channels, and compresses images via Pillow. |
+| **`logging_config.py`** | **Observability** | Central logging setup; verbosity toggled via `JARVIS_LOG_LEVEL`. Quiets noisy third-party loggers (chromadb, httpx). |
+
+---
+
+## Auth & Transport
+
+`/api/chat` sits behind three composable defenses:
+
+1. **Bearer-token auth** — `JARVIS_API_TOKEN` is compared with `secrets.compare_digest` to avoid timing attacks. If the env var is unset, the endpoint silently downgrades to localhost-only (for safe local dev). The frontend PWA stores the token in `localStorage` with a 12-hour TTL, so a stolen unlocked phone loses access by the next morning.
+2. **Rate limiting** — SlowAPI caps `/api/chat` at 20 requests/minute keyed on remote IP. Brute-forcing a 32-character token under that ceiling is computationally infeasible.
+3. **CORS allowlist** — `JARVIS_ALLOWED_ORIGINS` (comma-separated) restricts which origins the browser will let read the response. Limits cross-site request forgery from random pages the user happens to visit.
+
+The intended deployment topology is **Mac (local) → tunnel (ngrok or Tailscale, HTTPS) → phone PWA**. The Mac never opens a port to the public internet directly.
 
 ---
 
@@ -59,7 +73,7 @@ If a Level 2 command is generated:
 2. Jarvis responds to the user via TTS: *"Achtung! Der Befehl X ist gefährlich. Soll ich ihn ausführen?"*
 3. The next time the user speaks, `main.py` intercepts the audio.
 4. `agent.py` uses Gemini (Temperature 0.0) as an NLP intent classifier to evaluate if the user said `APPROVE` ("Ja", "Mach das") or `DENY` ("Stopp", "Nein").
-5. If approved, `security.py` executes the command with `force=True`. If denied, it is dropped.
+5. **Fail-Closed Gate:** If approved, `security.py` executes the command with `force=True`. If denied, or if the intent is ambiguous (UNCLEAR), the command is safely dropped.
 
 ---
 

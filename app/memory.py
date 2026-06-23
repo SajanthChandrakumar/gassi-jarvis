@@ -12,12 +12,15 @@ Each session stores:
 Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 """
 
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import chromadb
+
+log = logging.getLogger(__name__)
 
 # ─── ChromaDB Long-Term Memory (Persistent) ───────────────────────────────────
 
@@ -39,13 +42,13 @@ def save_memory(text: str) -> str:
         metadatas=[{"timestamp": datetime.now().isoformat()}],
         ids=[doc_id],
     )
-    print(f"[MEMORY] Gespeichert: {text}")
+    log.info("Memory gespeichert: %s", text)
     return "Erinnerung erfolgreich im Langzeitgedächtnis verankert."
 
 
 def recall_memory(query: str, n_results: int = 5) -> str:
     """Sucht nach Erinnerungen und filtert irrelevante Treffer via Distanz-Schwelle."""
-    print(f"[MEMORY] Suche im Unterbewusstsein nach: {query}")
+    log.info("Memory Suche: %s", query)
 
     results = collection.query(
         query_texts=[query],
@@ -70,9 +73,10 @@ def recall_memory(query: str, n_results: int = 5) -> str:
                 f"- [{timestamp_short}] {text} (Relevanz-Score: {round(distance, 2)})"
             )
         else:
-            print(
-                f"[MEMORY-FILTER] Ignoriere irrelevante Erinnerung "
-                f"(Distanz {round(distance, 2)}): {text}"
+            log.debug(
+                "Memory-Filter: ignoriere irrelevante Erinnerung "
+                "(Distanz %.2f): %s",
+                distance, text,
             )
 
     if not formatted_memories:
@@ -106,7 +110,7 @@ def get_session(session_id: str) -> dict[str, Any]:
         - pending_action_type: str | None — Action type (e.g. 'shell_command').
     """
     if session_id not in _active_sessions:
-        print(f"[SESSION] Neue Session erstellt: {session_id}")
+        log.info("Neue Session erstellt: %s", session_id)
         _active_sessions[session_id] = {
             "history": [],
             "pending_command": None,
@@ -145,4 +149,4 @@ def clear_pending_command(session_id: str) -> None:
     session = get_session(session_id)
     session["pending_command"] = None
     session["pending_action_type"] = None
-    print(f"[SESSION] Pending-Command gelöscht für: {session_id}")
+    log.info("Pending-Command gelöscht für: %s", session_id)
