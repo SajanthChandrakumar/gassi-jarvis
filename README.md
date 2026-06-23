@@ -77,7 +77,7 @@ phone PWA  ──(ngrok / Tailscale, HTTPS)──>  FastAPI gateway (main.py)
 - **LLM:** Google Gemini 2.5 Flash via `google-genai` SDK
 - **Voice:** Microsoft Edge-TTS (German)
 - **Memory:** ChromaDB (persistent vector store)
-- **Frontend:** Vanilla HTML/JS PWA, no framework
+- **Frontend:** Installable PWA (web manifest + service worker), vanilla HTML/JS, no framework
 - **Security:** SlowAPI rate limiting, FastAPI CORS, bearer-token auth
 - **Remote access:** ngrok or Tailscale
 - **Target platform:** macOS (Apple Silicon)
@@ -205,6 +205,8 @@ Response:
 - [x] Bearer-token auth, rate limit, CORS, structured logging
 - [x] Frontend Kill-Switch via AbortController for instant audio interrupts
 - [x] Token TTL (12h) on the PWA
+- [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
+- [x] Installable PWA (web manifest, maskable icons, service worker)
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
 - [ ] HitL gate on any tool call originating from screenshot or recalled-memory content (defense against indirect prompt injection)

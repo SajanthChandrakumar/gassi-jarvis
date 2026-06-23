@@ -27,6 +27,7 @@ import edge_tts
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -71,6 +72,15 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
+)
+
+# ─── Static assets (PWA manifest, icons, service worker) ──────────────────────
+# Serves the contents of app/static at /static — used by the PWA manifest and
+# its icons. index.html itself is served from "/" (see get_index below).
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(BASE_DIR, "static")),
+    name="static",
 )
 
 TTS_VOICE = "de-DE-KillianNeural"
@@ -185,6 +195,23 @@ async def get_index():
     if not os.path.exists(index_path):
         return {"error": "index.html nicht im Ordner app/static gefunden!"}
     return FileResponse(index_path)
+
+
+@app.get("/sw.js")
+async def get_service_worker():
+    """
+    Serve the service worker from the site root.
+
+    A service worker can only control pages within its own URL scope, so the
+    file must be served from "/" (not "/static/") for it to control the PWA.
+    'no-cache' lets the browser pick up a new worker on each visit.
+    """
+    sw_path = os.path.join(BASE_DIR, "static", "sw.js")
+    return FileResponse(
+        sw_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
