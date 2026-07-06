@@ -382,7 +382,6 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             if threat_level >= 2:
                                 # DANGEROUS: Save to pending state, ask for permission
                                 session["pending_command"] = payload
-                                session["pending_action_type"] = action_type
 
                                 warning_text = (
                                     f"Achtung! Der Befehl '{payload}' wurde als "
