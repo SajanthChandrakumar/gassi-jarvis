@@ -7,7 +7,6 @@ Human-in-the-Loop (HitL) pending command flow.
 Each session stores:
     - history:              Conversation turn history (list of dicts).
     - pending_command:      A shell command awaiting user approval (or None).
-    - pending_action_type:  The action type that triggered it, e.g. 'shell_command' (or None).
 
 Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 """
@@ -107,14 +106,12 @@ def get_session(session_id: str) -> dict[str, Any]:
     Returns a dict with:
         - history: list[dict]           — Conversation turns.
         - pending_command: str | None   — Shell command awaiting HitL approval.
-        - pending_action_type: str | None — Action type (e.g. 'shell_command').
     """
     if session_id not in _active_sessions:
         log.info("Neue Session erstellt: %s", session_id)
         _active_sessions[session_id] = {
             "history": [],
             "pending_command": None,
-            "pending_action_type": None,
         }
 
     return _active_sessions[session_id]
@@ -148,5 +145,4 @@ def clear_pending_command(session_id: str) -> None:
     """
     session = get_session(session_id)
     session["pending_command"] = None
-    session["pending_action_type"] = None
     log.info("Pending-Command gelöscht für: %s", session_id)
