@@ -34,7 +34,12 @@ from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
 from app.models import ChatRequest, ChatResponse
-from app.memory import get_session, clear_pending_command, record_turn
+from app.memory import (
+    get_session,
+    clear_pending_command,
+    record_turn,
+    last_reply_tainted,
+)
 from app.agent import (
     get_gemini_response,
     get_vision_response,
@@ -238,9 +243,14 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
     session_id = chat.session_id
     session = get_session(session_id)
 
-    async def respond(text: str, action: str = "none") -> dict:
-        """Record the exchange in session history, then build the response."""
-        record_turn(session_id, user_text, text)
+    async def respond(text: str, action: str = "none", tainted: bool = False) -> dict:
+        """Record the exchange in session history, then build the response.
+
+        `tainted` marks replies built from externally-sourced content (screen
+        capture, web search, recalled memory) so a follow-up shell command is
+        forced through HitL — see last_reply_tainted.
+        """
+        record_turn(session_id, user_text, text, tainted=tainted)
         return await _build_response(text=text, action=action)
 
     try:
@@ -381,21 +391,37 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                         # ── 3b: shell_command → Security router ────────────
                         elif action_type == "shell_command":
                             threat_level = evaluate_security_level(payload)
+
+                            # Indirect-injection guard: if the previous reply
+                            # came from a screenshot / web search / recalled
+                            # memory, a shell command proposed now may have been
+                            # planted by injected text — force HitL regardless
+                            # of the command's own threat level.
+                            tainted_context = last_reply_tainted(session_id)
                             log.info(
-                                "Security: cmd=%r → threat_level=%s",
-                                payload, threat_level,
+                                "Security: cmd=%r → threat_level=%s tainted_ctx=%s",
+                                payload, threat_level, tainted_context,
                             )
 
-                            if threat_level >= 2:
-                                # DANGEROUS: Save to pending state, ask for permission
+                            if threat_level >= 2 or tainted_context:
+                                # DANGEROUS (or injection-suspect): ask first.
                                 session["pending_command"] = payload
 
-                                warning_text = (
-                                    f"Achtung! Der Befehl '{payload}' wurde als "
-                                    f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
-                                    f"Soll ich ihn trotzdem ausführen? "
-                                    f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
-                                )
+                                if tainted_context and threat_level < 2:
+                                    warning_text = (
+                                        f"Sicherheitshinweis: Der Befehl '{payload}' "
+                                        f"folgt direkt auf extern gelesene Inhalte "
+                                        f"(Screenshot/Web/Gedächtnis). Zur Sicherheit "
+                                        f"frage ich nach — soll ich ihn ausführen? "
+                                        f"Bestätige mit 'Ja' oder sage 'Nein'."
+                                    )
+                                else:
+                                    warning_text = (
+                                        f"Achtung! Der Befehl '{payload}' wurde als "
+                                        f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
+                                        f"Soll ich ihn trotzdem ausführen? "
+                                        f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
+                                    )
                                 return await respond(
                                     text=warning_text,
                                     action=f"hitl_pending: {payload}",
@@ -441,6 +467,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text=vision_text,
                                 action="vision_screenshot_analyzed",
+                                tainted=True,  # screen content may carry injected text
                             )
                         except Exception as e:
                             log.error("Vision Bildanalyse fehlgeschlagen: %s", e)
@@ -454,7 +481,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                         query = fc.args.get("query", "").strip()
                         log.info("Web-Suche angefordert: %r", query)
                         try:
-                            search_text = search_web(query)
+                            search_text = search_web(query, history=session["history"])
                             if not search_text:
                                 search_text = (
                                     "Ich habe dazu online leider nichts Brauchbares gefunden."
@@ -462,6 +489,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text=search_text,
                                 action=f"web_search: {query}",
+                                tainted=True,  # web results may carry injected text
                             )
                         except Exception as e:
                             log.error("Web-Suche fehlgeschlagen: %s", e)
@@ -481,6 +509,9 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text=memory_text,
                                 action=f"memory:{fc.name}",
+                                # recalled memory may carry injected text; save/
+                                # stats are self-generated and stay untainted.
+                                tainted=(fc.name == "recall_memory"),
                             )
                         except Exception as e:
                             log.error("Memory-Tool %s fehlgeschlagen: %s", fc.name, e)
