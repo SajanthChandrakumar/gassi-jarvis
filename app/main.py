@@ -67,8 +67,26 @@ app = FastAPI(
 )
 
 # ─── Rate limiting ────────────────────────────────────────────────────────────
-# Keyed by remote IP. Caps brute-force token guessing on /api/chat.
-limiter = Limiter(key_func=get_remote_address)
+# Caps brute-force token guessing on /api/chat.
+#
+# Behind a tunnel (ngrok/Tailscale) the TCP peer is always 127.0.0.1, so keying
+# on the raw remote address would lump every phone and every attacker into one
+# global bucket — the legit user could self-lock, and per-client limiting would
+# be meaningless. Prefer the originating client from X-Forwarded-For instead.
+#
+# Caveat: X-Forwarded-For is client-spoofable, so this is not a hard
+# anti-brute-force guarantee — the bearer token remains the real wall. It does
+# stop the shared-bucket problem and raises the bar for casual abuse. Run uvicorn
+# with --forwarded-allow-ips so the header is trusted from the tunnel.
+def _client_key(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        # Leftmost entry is the original client the tunnel saw.
+        return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_key)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 

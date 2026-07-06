@@ -130,10 +130,12 @@ JARVIS_BRAIN_DIR=/path/to/chromadb
 ### 4. Run
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips '*'
 ```
 
 Open `http://localhost:8000` for the PWA, or `http://localhost:8000/docs` for the Swagger UI.
+
+`--forwarded-allow-ips` lets the app trust the `X-Forwarded-For` header from your tunnel, so per-client rate limiting keys on the real phone/IP instead of the tunnel's localhost peer.
 
 ### 5. Reach it from your phone
 
@@ -209,9 +211,12 @@ Response:
 - [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
 - [x] Installable PWA (web manifest, maskable icons, service worker)
 - [x] Live web knowledge via Google Search grounding (read-only)
+- [x] Disk-persistent sessions (history + pending HitL command survive restarts)
+- [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
+- [x] Pending-command TTL and per-client rate limiting behind the tunnel
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
-- [ ] HitL gate on any tool call originating from screenshot or recalled-memory content (defense against indirect prompt injection)
+- [ ] Apple Watch companion for wrist-first, hands-free walks
 
 ---
 
