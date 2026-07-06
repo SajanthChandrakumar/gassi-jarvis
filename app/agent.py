@@ -161,6 +161,81 @@ def get_gemini_response(
     return response
 
 
+# ─── Memory Tool Dispatch ─────────────────────────────────────────────────────
+#
+# Automatic Function Calling (AFC) is disabled by the SDK whenever the tool list
+# mixes manual FunctionDeclarations (mac_controller_tool, take_screenshot_tool)
+# with Python callables. The mac tools MUST stay manual so every shell command
+# is gated through security.py — so we run the memory callables ourselves and
+# feed the result back to the model for a natural-language reply.
+
+_MEMORY_TOOLS = {
+    "save_memory": save_memory,
+    "recall_memory": recall_memory,
+    "get_memory_stats": get_memory_stats,
+}
+
+
+def is_memory_tool(name: str) -> bool:
+    """True if `name` is one of the locally-dispatched memory tools."""
+    return name in _MEMORY_TOOLS
+
+
+def handle_memory_tool(
+    function_call: types.FunctionCall,
+    user_text: str,
+    history: list[dict] | None = None,
+) -> str:
+    """
+    Execute a memory tool the model requested, then ask the model to phrase the
+    final answer given the tool's result.
+
+    Args:
+        function_call: The FunctionCall Gemini emitted (name + args).
+        user_text: The original user message that triggered the call.
+        history: Prior conversation turns for context.
+
+    Returns:
+        Gemini's natural-language reply after seeing the tool result.
+    """
+    fn = _MEMORY_TOOLS[function_call.name]
+    args = dict(function_call.args or {})
+    tool_result = fn(**args)
+    log.info("Memory-Tool ausgeführt: %s(%s)", function_call.name, args)
+
+    # Rebuild the conversation: user turn → model's function_call turn →
+    # our function_response turn, then let the model answer in words.
+    contents: list[types.Content] = _history_to_contents(history or [])
+    contents.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_text)])
+    )
+    contents.append(
+        types.Content(role="model", parts=[types.Part(function_call=function_call)])
+    )
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_function_response(
+                    name=function_call.name,
+                    response={"result": tool_result},
+                )
+            ],
+        )
+    )
+
+    # No tools on the follow-up call → force a plain-text answer.
+    followup = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_prompt(),
+            temperature=0.1,
+        ),
+    )
+    return followup.text or tool_result
+
+
 def get_vision_response(user_text: str, image_bytes: bytes) -> str:
     """
     Analyze a screenshot with Gemini Vision, keeping the Jarvis persona.
