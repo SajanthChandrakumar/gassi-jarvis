@@ -40,7 +40,7 @@ Security is layered, with each layer designed to fail closed:
 - **Human-in-the-Loop** — anything not classified as clearly safe requires explicit voice approval in the next turn.
 - **Secret hygiene** — credentials and the long-term memory store live outside the repo and are excluded from container builds.
 
-Concrete configuration lives in [`security.py`](app/security.py); the design rationale is in [architecture.md](architecture.md).
+Concrete configuration lives in [`security.py`](app/security.py); the full threat model is in [SECURITY.md](SECURITY.md) and the design rationale in [architecture.md](architecture.md).
 
 ---
 
@@ -125,6 +125,7 @@ JARVIS_ALLOWED_ORIGINS=https://your-tunnel.ngrok-free.dev
 JARVIS_LOG_LEVEL=INFO            # DEBUG | INFO | WARNING | ERROR
 JARVIS_SHELL_CWD=/path/to/sandbox
 JARVIS_BRAIN_DIR=/path/to/chromadb
+JARVIS_SESSIONS_FILE=/path/to/jarvis_sessions.json
 ```
 
 ### 4. Run
