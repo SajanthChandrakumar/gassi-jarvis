@@ -37,6 +37,8 @@ from app.models import ChatRequest, ChatResponse
 from app.memory import (
     get_session,
     clear_pending_command,
+    set_pending_command,
+    get_pending_command,
     record_turn,
     last_reply_tainted,
 )
@@ -101,6 +103,21 @@ TTS_VOICE = "de-DE-KillianNeural"
 # Blocks quote/backslash breakouts into arbitrary AppleScript.
 _SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,64}$")
 
+# Markdown links [text](url) → keep just the visible text.
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
+# Bare URLs the model may cite (grounding answers love these); TTS would spell
+# them out letter by letter, so replace with a short spoken placeholder.
+_BARE_URL = re.compile(r"\b(?:https?://|www\.)\S+")
+
+
+def _clean_for_tts(text: str) -> str:
+    """Strip Markdown artifacts and URLs so Edge-TTS doesn't read them aloud."""
+    text = _MD_LINK.sub(r"\1", text)
+    text = _BARE_URL.sub("(Link)", text)
+    text = text.replace("*", "").replace("#", "").replace("- ", " ")
+    # Collapse whitespace left behind by removals.
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -151,8 +168,8 @@ async def _generate_tts_audio(text: str) -> str:
     Returns:
         Base64-encoded audio string, or empty string on failure.
     """
-    # Strip Markdown artifacts that TTS would read aloud
-    clean_text = text.replace("*", "").replace("#", "").replace("- ", " ")
+    # Strip Markdown artifacts and URLs that TTS would otherwise read aloud.
+    clean_text = _clean_for_tts(text)
 
     try:
         communicate = edge_tts.Communicate(clean_text, TTS_VOICE)
@@ -257,8 +274,8 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 1: HitL Interceptor — Check for pending dangerous commands
         # ──────────────────────────────────────────────────────────────────
-        if session["pending_command"] is not None:
-            pending_cmd = session["pending_command"]
+        pending_cmd = get_pending_command(session_id)
+        if pending_cmd is not None:
             log.info("HitL ausstehender Befehl: %r — analysiere Antwort", pending_cmd)
 
             intent = analyze_user_intent(user_text, pending_cmd)
@@ -405,7 +422,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
 
                             if threat_level >= 2 or tainted_context:
                                 # DANGEROUS (or injection-suspect): ask first.
-                                session["pending_command"] = payload
+                                set_pending_command(session_id, payload)
 
                                 if tainted_context and threat_level < 2:
                                     warning_text = (

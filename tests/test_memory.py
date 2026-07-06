@@ -12,6 +12,7 @@ Run from the project root:
 
 import os
 import tempfile
+import time
 
 import pytest
 
@@ -39,7 +40,11 @@ def fresh_state(tmp_path):
 class TestSessionBasics:
     def test_new_session_has_expected_shape(self):
         s = memory.get_session("s1")
-        assert s == {"history": [], "pending_command": None}
+        assert s == {
+            "history": [],
+            "pending_command": None,
+            "pending_command_ts": None,
+        }
 
     def test_get_session_is_idempotent(self):
         a = memory.get_session("s1")
@@ -56,10 +61,37 @@ class TestSessionBasics:
         assert hist[-1]["text"] == f"m{memory.MAX_HISTORY_ENTRIES - 1}"
 
     def test_clear_pending_command(self):
-        s = memory.get_session("s1")
-        s["pending_command"] = "sudo reboot"
+        memory.set_pending_command("s1", "sudo reboot")
         memory.clear_pending_command("s1")
         assert memory.get_session("s1")["pending_command"] is None
+
+
+# ─── Pending-command expiry (HitL TTL) ────────────────────────────────────────
+
+
+class TestPendingExpiry:
+    def test_fresh_pending_is_returned(self):
+        memory.set_pending_command("s1", "rm -rf ~/tmp")
+        assert memory.get_pending_command("s1") == "rm -rf ~/tmp"
+
+    def test_no_pending_returns_none(self):
+        assert memory.get_pending_command("s1") is None
+
+    def test_expired_pending_is_dropped(self):
+        memory.set_pending_command("s1", "rm -rf ~/tmp")
+        # Backdate the timestamp beyond the TTL.
+        memory.get_session("s1")["pending_command_ts"] = (
+            time.time() - memory.PENDING_COMMAND_TTL_SECONDS - 1
+        )
+        assert memory.get_pending_command("s1") is None
+        # And it's cleared, not lingering.
+        assert memory.get_session("s1")["pending_command"] is None
+
+    def test_missing_timestamp_is_treated_as_expired(self):
+        s = memory.get_session("s1")
+        s["pending_command"] = "sudo reboot"
+        s["pending_command_ts"] = None
+        assert memory.get_pending_command("s1") is None
 
 
 # ─── Disk persistence (survives "restart") ────────────────────────────────────
