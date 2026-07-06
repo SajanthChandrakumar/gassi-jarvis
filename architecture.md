@@ -39,7 +39,7 @@ graph TD
 | **`main.py`** | **Gateway & Controller** | Single entry point. Enforces bearer-token auth (`JARVIS_API_TOKEN`), per-IP rate limiting (SlowAPI), and a CORS allowlist. Manages the 4-step request lifecycle (HitL Interceptor → LLM Call → Tool Executor → TTS/Response). |
 | **`models.py`** | **API Contract** | Enforces strict JSON validation using Pydantic v2 (`MessagePayload`, `ChatRequest`, `ChatResponse`). |
 | **`memory.py`** | **Session & RAG** | Manages ephemeral session state (multi-turn history, pending HitL commands) and persistent long-term memory via ChromaDB vector store. |
-| **`agent.py`** | **LLM Orchestrator** | Handles all Google Gemini integrations. Manages multi-turn conversation contexts, executes vision analysis, and acts as an NLP intent classifier. |
+| **`agent.py`** | **LLM Orchestrator** | Handles all Google Gemini integrations. Manages multi-turn conversation contexts, executes vision analysis, dispatches memory + web-search tools, and acts as an NLP intent classifier. |
 | **`security.py`** | **Layered Security Router** | Evaluates shell commands via `evaluate_security_level`. Sandboxes execution via `subprocess.run()` with a configurable working directory. |
 | **`vision.py`** | **Vision Module** | Executes macOS `screencapture` against a `tempfile.mkstemp` path (symlink-race safe), drops alpha channels, and compresses images via Pillow. |
 | **`logging_config.py`** | **Observability** | Central logging setup; verbosity toggled via `JARVIS_LOG_LEVEL`. Quiets noisy third-party loggers (chromadb, httpx). |

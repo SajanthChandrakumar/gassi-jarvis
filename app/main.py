@@ -41,6 +41,7 @@ from app.agent import (
     analyze_user_intent,
     is_memory_tool,
     handle_memory_tool,
+    search_web,
 )
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
@@ -446,6 +447,27 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text="Die Bildanalyse ist leider fehlgeschlagen.",
                                 action="vision_analysis_error",
+                            )
+
+                    # ── Web search (Google Search grounding) ────────────────
+                    elif fc.name == "web_search":
+                        query = fc.args.get("query", "").strip()
+                        log.info("Web-Suche angefordert: %r", query)
+                        try:
+                            search_text = search_web(query)
+                            if not search_text:
+                                search_text = (
+                                    "Ich habe dazu online leider nichts Brauchbares gefunden."
+                                )
+                            return await respond(
+                                text=search_text,
+                                action=f"web_search: {query}",
+                            )
+                        except Exception as e:
+                            log.error("Web-Suche fehlgeschlagen: %s", e)
+                            return await respond(
+                                text="Die Websuche ist gerade fehlgeschlagen.",
+                                action="web_search_error",
                             )
 
                     # ── Memory tools (save/recall/stats) ────────────────────
