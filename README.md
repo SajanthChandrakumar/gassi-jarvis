@@ -23,6 +23,7 @@ Gassi-Jarvis is the result: a Large Action Model that lives on my Mac, exposes i
 - **Talks back.** Voice input from the browser; Edge-TTS for natural-sounding voice output (German default, configurable).
 - **Holds context.** Multi-turn conversations with in-memory session state and a persistent ChromaDB vector store for long-term memory.
 - **Sees the screen.** Takes silent macOS screenshots and feeds them to Gemini Vision for visual Q&A.
+- **Knows what's current.** Google Search grounding for live facts — weather, news, prices — while still answering static questions from the model directly.
 - **Runs commands — safely.** A layered security router classifies every shell command. Dangerous commands route through a Human-in-the-Loop voice approval flow before executing.
 - **Reaches your phone.** FastAPI backend behind ngrok/Tailscale + bearer-token auth, so the assistant follows you anywhere.
 
@@ -207,6 +208,7 @@ Response:
 - [x] Token TTL (12h) on the PWA
 - [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
 - [x] Installable PWA (web manifest, maskable icons, service worker)
+- [x] Live web knowledge via Google Search grounding (read-only)
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
 - [ ] HitL gate on any tool call originating from screenshot or recalled-memory content (defense against indirect prompt injection)

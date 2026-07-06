@@ -80,6 +80,31 @@ take_screenshot_tool = types.Tool(
     ]
 )
 
+web_search_tool = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="web_search",
+            description=(
+                "Durchsucht das Internet nach AKTUELLEN oder faktischen Informationen. "
+                "Nutze dies IMMER, wenn die Antwort von Echtzeit-Daten abhängt, die du "
+                "nicht sicher aus deinem Training kennst: aktuelle Ereignisse, Nachrichten, "
+                "Wetter, Preise, Sportergebnisse, kürzlich Veröffentlichtes, oder wann immer "
+                "der User explizit nachschlagen/googeln möchte. Erfinde keine Fakten — such nach."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "query": types.Schema(
+                        type=types.Type.STRING,
+                        description="Die Suchanfrage in natürlicher Sprache.",
+                    ),
+                },
+                required=["query"],
+            ),
+        )
+    ]
+)
+
 
 def _build_system_prompt() -> str:
     """Build the Jarvis system instruction with current date/time."""
@@ -154,11 +179,42 @@ def get_gemini_response(
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
-            tools=[mac_controller_tool, take_screenshot_tool, save_memory, recall_memory, get_memory_stats],
+            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, save_memory, recall_memory, get_memory_stats],
             temperature=0.1,
         ),
     )
     return response
+
+
+# ─── Web Search (Google Search Grounding) ─────────────────────────────────────
+#
+# google_search grounding cannot share a request with FunctionDeclarations, so
+# `web_search` is declared as a normal function tool the model can pick, and we
+# fulfil it here with a separate grounding-only call. Read-only by design: the
+# model reads search results and answers; it never gains a way to act on the web.
+
+
+def search_web(query: str) -> str:
+    """
+    Answer a query with live Google Search grounding.
+
+    Args:
+        query: Natural-language search query the model requested.
+
+    Returns:
+        Gemini's grounded, natural-language answer (with current web data).
+    """
+    log.info("Web-Suche: %s", query)
+    response = client.models.generate_content(
+        model=MODEL_NAME,
+        contents=query,
+        config=types.GenerateContentConfig(
+            system_instruction=_build_system_prompt(),
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+            temperature=0.1,
+        ),
+    )
+    return response.text or ""
 
 
 # ─── Memory Tool Dispatch ─────────────────────────────────────────────────────
