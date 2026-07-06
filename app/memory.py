@@ -11,8 +11,10 @@ Each session stores:
 Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 """
 
+import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -94,9 +96,45 @@ def get_memory_stats() -> str:
     return f"Mein Langzeitgedächtnis umfasst aktuell {count} gespeicherte Wissensfragmente."
 
 
-# ─── Session State Management (In-Memory, HitL-aware) ─────────────────────────
+# ─── Session State Management (disk-backed, HitL-aware) ───────────────────────
+#
+# Sessions persist to a JSON file so a server restart doesn't drop the
+# conversation history — or, more importantly, a pending HitL command that is
+# still awaiting the user's approval. Anchored next to the brain dir; override
+# via JARVIS_SESSIONS_FILE.
 
-_active_sessions: dict[str, dict[str, Any]] = {}
+_DEFAULT_SESSIONS_FILE = Path(BRAIN_DIR).parent / "jarvis_sessions.json"
+SESSIONS_FILE = Path(os.environ.get("JARVIS_SESSIONS_FILE", str(_DEFAULT_SESSIONS_FILE)))
+
+
+def _load_sessions() -> dict[str, dict[str, Any]]:
+    """Load persisted sessions from disk; return empty on missing/corrupt file."""
+    try:
+        with open(SESSIONS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Sessions-Datei unlesbar (%s) — starte mit leerem State.", e)
+    return {}
+
+
+_active_sessions: dict[str, dict[str, Any]] = _load_sessions()
+
+
+def _persist_sessions() -> None:
+    """Write the session store to disk atomically (temp file + rename)."""
+    try:
+        SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SESSIONS_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_active_sessions, f, ensure_ascii=False)
+        os.replace(tmp, SESSIONS_FILE)
+    except OSError as e:
+        # Persistence is best-effort — never break a live request over it.
+        log.warning("Sessions konnten nicht gespeichert werden: %s", e)
 
 
 def get_session(session_id: str) -> dict[str, Any]:
@@ -106,12 +144,14 @@ def get_session(session_id: str) -> dict[str, Any]:
     Returns a dict with:
         - history: list[dict]           — Conversation turns.
         - pending_command: str | None   — Shell command awaiting HitL approval.
+        - pending_command_ts: float|None — Epoch seconds when it was queued.
     """
     if session_id not in _active_sessions:
         log.info("Neue Session erstellt: %s", session_id)
         _active_sessions[session_id] = {
             "history": [],
             "pending_command": None,
+            "pending_command_ts": None,
         }
 
     return _active_sessions[session_id]
@@ -120,20 +160,81 @@ def get_session(session_id: str) -> dict[str, Any]:
 # Cap stored turns so the Gemini context can't grow without bound.
 MAX_HISTORY_ENTRIES: int = 20
 
+# A queued HitL command expires after this many seconds. Prevents a stale
+# "yes" (or one meant for something else) from firing a command the user
+# proposed long ago — especially now that pending state survives restarts.
+PENDING_COMMAND_TTL_SECONDS: int = 300
 
-def record_turn(session_id: str, user_text: str, model_text: str) -> None:
+
+def set_pending_command(session_id: str, command: str) -> None:
+    """Queue a dangerous command for HitL approval, timestamped for expiry."""
+    session = get_session(session_id)
+    session["pending_command"] = command
+    session["pending_command_ts"] = time.time()
+    _persist_sessions()
+
+
+def get_pending_command(session_id: str) -> str | None:
+    """
+    Return the queued command awaiting approval, or None if there is none or
+    it has expired. Expired commands are cleared as a side effect.
+    """
+    session = get_session(session_id)
+    cmd = session.get("pending_command")
+    if cmd is None:
+        return None
+
+    ts = session.get("pending_command_ts")
+    if ts is None or (time.time() - ts) > PENDING_COMMAND_TTL_SECONDS:
+        log.info("Pending-Befehl abgelaufen/ungültig, verworfen: %r", cmd)
+        clear_pending_command(session_id)
+        return None
+
+    return cmd
+
+
+def record_turn(
+    session_id: str,
+    user_text: str,
+    model_text: str,
+    tainted: bool = False,
+) -> None:
     """
     Append a completed user/model exchange to the session history.
 
     Keeps only the most recent MAX_HISTORY_ENTRIES entries so long walks
-    don't blow up the prompt size.
+    don't blow up the prompt size. Persists the session to disk — this also
+    captures any pending_command set just before the reply was built.
+
+    Args:
+        tainted: True if the model's reply carries externally-sourced content
+                 (screen capture, recalled memory) that could contain injected
+                 instructions. Used to force HitL on a follow-up shell command.
     """
     session = get_session(session_id)
     session["history"].append({"role": "user", "text": user_text})
-    session["history"].append({"role": "model", "text": model_text})
+    session["history"].append({"role": "model", "text": model_text, "tainted": tainted})
 
     if len(session["history"]) > MAX_HISTORY_ENTRIES:
         session["history"] = session["history"][-MAX_HISTORY_ENTRIES:]
+
+    _persist_sessions()
+
+
+def last_reply_tainted(session_id: str) -> bool:
+    """
+    True if the most recent model turn carried externally-sourced content.
+
+    Mitigation for indirect prompt injection: if the previous reply came from a
+    screenshot or recalled memory, any shell command the model proposes on the
+    next turn is treated as dangerous (forced through HitL), since the command
+    may have been planted by injected text the model just read.
+    """
+    session = get_session(session_id)
+    for turn in reversed(session["history"]):
+        if turn.get("role") == "model":
+            return bool(turn.get("tainted"))
+    return False
 
 
 def clear_pending_command(session_id: str) -> None:
@@ -145,4 +246,6 @@ def clear_pending_command(session_id: str) -> None:
     """
     session = get_session(session_id)
     session["pending_command"] = None
+    session["pending_command_ts"] = None
+    _persist_sessions()
     log.info("Pending-Command gelöscht für: %s", session_id)
