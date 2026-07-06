@@ -43,6 +43,14 @@ graph TD
 | **`security.py`** | **Layered Security Router** | Evaluates shell commands via `evaluate_security_level`. Sandboxes execution via `subprocess.run()` with a configurable working directory. |
 | **`vision.py`** | **Vision Module** | Executes macOS `screencapture` against a `tempfile.mkstemp` path (symlink-race safe), drops alpha channels, and compresses images via Pillow. |
 | **`logging_config.py`** | **Observability** | Central logging setup; verbosity toggled via `JARVIS_LOG_LEVEL`. Quiets noisy third-party loggers (chromadb, httpx). |
+| **`static/`** | **Installable PWA** | `index.html` (conversation transcript + inline HitL approval cards, token-TTL auth, AbortController kill-switch), `manifest.json` + maskable icons, and `sw.js` (network-first navigation, cache-first static, never intercepts `/api/*`). |
+
+### Static Serving Routes
+
+- `GET /` → serves the PWA `index.html`.
+- `GET /sw.js` → serves the service worker at root scope so it can control the whole app.
+- `/static/*` → mounted `StaticFiles` for the manifest and icons.
+- `POST /api/chat` → the only dynamic endpoint; token-gated and rate-limited.
 
 ---
 
