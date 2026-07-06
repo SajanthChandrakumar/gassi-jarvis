@@ -14,6 +14,7 @@ Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -143,12 +144,14 @@ def get_session(session_id: str) -> dict[str, Any]:
     Returns a dict with:
         - history: list[dict]           — Conversation turns.
         - pending_command: str | None   — Shell command awaiting HitL approval.
+        - pending_command_ts: float|None — Epoch seconds when it was queued.
     """
     if session_id not in _active_sessions:
         log.info("Neue Session erstellt: %s", session_id)
         _active_sessions[session_id] = {
             "history": [],
             "pending_command": None,
+            "pending_command_ts": None,
         }
 
     return _active_sessions[session_id]
@@ -156,6 +159,38 @@ def get_session(session_id: str) -> dict[str, Any]:
 
 # Cap stored turns so the Gemini context can't grow without bound.
 MAX_HISTORY_ENTRIES: int = 20
+
+# A queued HitL command expires after this many seconds. Prevents a stale
+# "yes" (or one meant for something else) from firing a command the user
+# proposed long ago — especially now that pending state survives restarts.
+PENDING_COMMAND_TTL_SECONDS: int = 300
+
+
+def set_pending_command(session_id: str, command: str) -> None:
+    """Queue a dangerous command for HitL approval, timestamped for expiry."""
+    session = get_session(session_id)
+    session["pending_command"] = command
+    session["pending_command_ts"] = time.time()
+    _persist_sessions()
+
+
+def get_pending_command(session_id: str) -> str | None:
+    """
+    Return the queued command awaiting approval, or None if there is none or
+    it has expired. Expired commands are cleared as a side effect.
+    """
+    session = get_session(session_id)
+    cmd = session.get("pending_command")
+    if cmd is None:
+        return None
+
+    ts = session.get("pending_command_ts")
+    if ts is None or (time.time() - ts) > PENDING_COMMAND_TTL_SECONDS:
+        log.info("Pending-Befehl abgelaufen/ungültig, verworfen: %r", cmd)
+        clear_pending_command(session_id)
+        return None
+
+    return cmd
 
 
 def record_turn(
@@ -211,5 +246,6 @@ def clear_pending_command(session_id: str) -> None:
     """
     session = get_session(session_id)
     session["pending_command"] = None
+    session["pending_command_ts"] = None
     _persist_sessions()
     log.info("Pending-Command gelöscht für: %s", session_id)
