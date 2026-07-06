@@ -11,6 +11,7 @@ Each session stores:
 Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
 """
 
+import json
 import logging
 import os
 from datetime import datetime
@@ -94,9 +95,45 @@ def get_memory_stats() -> str:
     return f"Mein Langzeitgedächtnis umfasst aktuell {count} gespeicherte Wissensfragmente."
 
 
-# ─── Session State Management (In-Memory, HitL-aware) ─────────────────────────
+# ─── Session State Management (disk-backed, HitL-aware) ───────────────────────
+#
+# Sessions persist to a JSON file so a server restart doesn't drop the
+# conversation history — or, more importantly, a pending HitL command that is
+# still awaiting the user's approval. Anchored next to the brain dir; override
+# via JARVIS_SESSIONS_FILE.
 
-_active_sessions: dict[str, dict[str, Any]] = {}
+_DEFAULT_SESSIONS_FILE = Path(BRAIN_DIR).parent / "jarvis_sessions.json"
+SESSIONS_FILE = Path(os.environ.get("JARVIS_SESSIONS_FILE", str(_DEFAULT_SESSIONS_FILE)))
+
+
+def _load_sessions() -> dict[str, dict[str, Any]]:
+    """Load persisted sessions from disk; return empty on missing/corrupt file."""
+    try:
+        with open(SESSIONS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        pass
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Sessions-Datei unlesbar (%s) — starte mit leerem State.", e)
+    return {}
+
+
+_active_sessions: dict[str, dict[str, Any]] = _load_sessions()
+
+
+def _persist_sessions() -> None:
+    """Write the session store to disk atomically (temp file + rename)."""
+    try:
+        SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SESSIONS_FILE.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_active_sessions, f, ensure_ascii=False)
+        os.replace(tmp, SESSIONS_FILE)
+    except OSError as e:
+        # Persistence is best-effort — never break a live request over it.
+        log.warning("Sessions konnten nicht gespeichert werden: %s", e)
 
 
 def get_session(session_id: str) -> dict[str, Any]:
@@ -121,19 +158,48 @@ def get_session(session_id: str) -> dict[str, Any]:
 MAX_HISTORY_ENTRIES: int = 20
 
 
-def record_turn(session_id: str, user_text: str, model_text: str) -> None:
+def record_turn(
+    session_id: str,
+    user_text: str,
+    model_text: str,
+    tainted: bool = False,
+) -> None:
     """
     Append a completed user/model exchange to the session history.
 
     Keeps only the most recent MAX_HISTORY_ENTRIES entries so long walks
-    don't blow up the prompt size.
+    don't blow up the prompt size. Persists the session to disk — this also
+    captures any pending_command set just before the reply was built.
+
+    Args:
+        tainted: True if the model's reply carries externally-sourced content
+                 (screen capture, recalled memory) that could contain injected
+                 instructions. Used to force HitL on a follow-up shell command.
     """
     session = get_session(session_id)
     session["history"].append({"role": "user", "text": user_text})
-    session["history"].append({"role": "model", "text": model_text})
+    session["history"].append({"role": "model", "text": model_text, "tainted": tainted})
 
     if len(session["history"]) > MAX_HISTORY_ENTRIES:
         session["history"] = session["history"][-MAX_HISTORY_ENTRIES:]
+
+    _persist_sessions()
+
+
+def last_reply_tainted(session_id: str) -> bool:
+    """
+    True if the most recent model turn carried externally-sourced content.
+
+    Mitigation for indirect prompt injection: if the previous reply came from a
+    screenshot or recalled memory, any shell command the model proposes on the
+    next turn is treated as dangerous (forced through HitL), since the command
+    may have been planted by injected text the model just read.
+    """
+    session = get_session(session_id)
+    for turn in reversed(session["history"]):
+        if turn.get("role") == "model":
+            return bool(turn.get("tainted"))
+    return False
 
 
 def clear_pending_command(session_id: str) -> None:
@@ -145,4 +211,5 @@ def clear_pending_command(session_id: str) -> None:
     """
     session = get_session(session_id)
     session["pending_command"] = None
+    _persist_sessions()
     log.info("Pending-Command gelöscht für: %s", session_id)

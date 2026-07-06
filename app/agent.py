@@ -194,20 +194,26 @@ def get_gemini_response(
 # model reads search results and answers; it never gains a way to act on the web.
 
 
-def search_web(query: str) -> str:
+def search_web(query: str, history: list[dict] | None = None) -> str:
     """
     Answer a query with live Google Search grounding.
 
     Args:
         query: Natural-language search query the model requested.
+        history: Prior conversation turns, so follow-ups like "und morgen?"
+                 keep the context of the previous search.
 
     Returns:
         Gemini's grounded, natural-language answer (with current web data).
     """
     log.info("Web-Suche: %s", query)
+    contents: list[types.Content] = _history_to_contents(history or [])
+    contents.append(
+        types.Content(role="user", parts=[types.Part.from_text(text=query)])
+    )
     response = client.models.generate_content(
         model=MODEL_NAME,
-        contents=query,
+        contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
             tools=[types.Tool(google_search=types.GoogleSearch())],
