@@ -25,3 +25,7 @@ def setup_logging() -> None:
     logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
+    # We deliberately run mixed manual + callable tools, which disables the
+    # SDK's Automatic Function Calling. Memory tools are dispatched by hand in
+    # agent.py, so the SDK's per-call "AFC is disabled" warning is expected noise.
+    logging.getLogger("google_genai.types").setLevel(logging.ERROR)

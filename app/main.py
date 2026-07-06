@@ -35,7 +35,13 @@ from slowapi.util import get_remote_address
 from app.logging_config import setup_logging
 from app.models import ChatRequest, ChatResponse
 from app.memory import get_session, clear_pending_command, record_turn
-from app.agent import get_gemini_response, get_vision_response, analyze_user_intent
+from app.agent import (
+    get_gemini_response,
+    get_vision_response,
+    analyze_user_intent,
+    is_memory_tool,
+    handle_memory_tool,
+)
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
 
@@ -440,6 +446,25 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text="Die Bildanalyse ist leider fehlgeschlagen.",
                                 action="vision_analysis_error",
+                            )
+
+                    # ── Memory tools (save/recall/stats) ────────────────────
+                    # AFC is off (mixed tool list), so we dispatch these
+                    # ourselves and let Gemini phrase the final answer.
+                    elif is_memory_tool(fc.name):
+                        try:
+                            memory_text = handle_memory_tool(
+                                fc, user_text, history=session["history"]
+                            )
+                            return await respond(
+                                text=memory_text,
+                                action=f"memory:{fc.name}",
+                            )
+                        except Exception as e:
+                            log.error("Memory-Tool %s fehlgeschlagen: %s", fc.name, e)
+                            return await respond(
+                                text="Beim Zugriff auf mein Gedächtnis ist etwas schiefgelaufen.",
+                                action="memory_error",
                             )
 
         # ──────────────────────────────────────────────────────────────────
