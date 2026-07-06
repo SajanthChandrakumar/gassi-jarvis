@@ -23,6 +23,7 @@ Gassi-Jarvis is the result: a Large Action Model that lives on my Mac, exposes i
 - **Talks back.** Voice input from the browser; Edge-TTS for natural-sounding voice output (German default, configurable).
 - **Holds context.** Multi-turn conversations with in-memory session state and a persistent ChromaDB vector store for long-term memory.
 - **Sees the screen.** Takes silent macOS screenshots and feeds them to Gemini Vision for visual Q&A.
+- **Knows what's current.** Google Search grounding for live facts — weather, news, prices — while still answering static questions from the model directly.
 - **Runs commands — safely.** A layered security router classifies every shell command. Dangerous commands route through a Human-in-the-Loop voice approval flow before executing.
 - **Reaches your phone.** FastAPI backend behind ngrok/Tailscale + bearer-token auth, so the assistant follows you anywhere.
 
@@ -39,7 +40,7 @@ Security is layered, with each layer designed to fail closed:
 - **Human-in-the-Loop** — anything not classified as clearly safe requires explicit voice approval in the next turn.
 - **Secret hygiene** — credentials and the long-term memory store live outside the repo and are excluded from container builds.
 
-Concrete configuration lives in [`security.py`](app/security.py); the design rationale is in [architecture.md](architecture.md).
+Concrete configuration lives in [`security.py`](app/security.py); the full threat model is in [SECURITY.md](SECURITY.md) and the design rationale in [architecture.md](architecture.md).
 
 ---
 
@@ -124,15 +125,18 @@ JARVIS_ALLOWED_ORIGINS=https://your-tunnel.ngrok-free.dev
 JARVIS_LOG_LEVEL=INFO            # DEBUG | INFO | WARNING | ERROR
 JARVIS_SHELL_CWD=/path/to/sandbox
 JARVIS_BRAIN_DIR=/path/to/chromadb
+JARVIS_SESSIONS_FILE=/path/to/jarvis_sessions.json
 ```
 
 ### 4. Run
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000
+uvicorn app.main:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips '*'
 ```
 
 Open `http://localhost:8000` for the PWA, or `http://localhost:8000/docs` for the Swagger UI.
+
+`--forwarded-allow-ips` lets the app trust the `X-Forwarded-For` header from your tunnel, so per-client rate limiting keys on the real phone/IP instead of the tunnel's localhost peer.
 
 ### 5. Reach it from your phone
 
@@ -207,9 +211,13 @@ Response:
 - [x] Token TTL (12h) on the PWA
 - [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
 - [x] Installable PWA (web manifest, maskable icons, service worker)
+- [x] Live web knowledge via Google Search grounding (read-only)
+- [x] Disk-persistent sessions (history + pending HitL command survive restarts)
+- [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
+- [x] Pending-command TTL and per-client rate limiting behind the tunnel
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
-- [ ] HitL gate on any tool call originating from screenshot or recalled-memory content (defense against indirect prompt injection)
+- [ ] Apple Watch companion for wrist-first, hands-free walks
 
 ---
 

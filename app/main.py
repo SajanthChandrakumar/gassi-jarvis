@@ -34,8 +34,22 @@ from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
 from app.models import ChatRequest, ChatResponse
-from app.memory import get_session, clear_pending_command, record_turn
-from app.agent import get_gemini_response, get_vision_response, analyze_user_intent
+from app.memory import (
+    get_session,
+    clear_pending_command,
+    set_pending_command,
+    get_pending_command,
+    record_turn,
+    last_reply_tainted,
+)
+from app.agent import (
+    get_gemini_response,
+    get_vision_response,
+    analyze_user_intent,
+    is_memory_tool,
+    handle_memory_tool,
+    search_web,
+)
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
 
@@ -53,8 +67,26 @@ app = FastAPI(
 )
 
 # ─── Rate limiting ────────────────────────────────────────────────────────────
-# Keyed by remote IP. Caps brute-force token guessing on /api/chat.
-limiter = Limiter(key_func=get_remote_address)
+# Caps brute-force token guessing on /api/chat.
+#
+# Behind a tunnel (ngrok/Tailscale) the TCP peer is always 127.0.0.1, so keying
+# on the raw remote address would lump every phone and every attacker into one
+# global bucket — the legit user could self-lock, and per-client limiting would
+# be meaningless. Prefer the originating client from X-Forwarded-For instead.
+#
+# Caveat: X-Forwarded-For is client-spoofable, so this is not a hard
+# anti-brute-force guarantee — the bearer token remains the real wall. It does
+# stop the shared-bucket problem and raises the bar for casual abuse. Run uvicorn
+# with --forwarded-allow-ips so the header is trusted from the tunnel.
+def _client_key(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        # Leftmost entry is the original client the tunnel saw.
+        return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_key)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -88,6 +120,21 @@ TTS_VOICE = "de-DE-KillianNeural"
 # App names passed to AppleScript may only contain these characters.
 # Blocks quote/backslash breakouts into arbitrary AppleScript.
 _SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,64}$")
+
+# Markdown links [text](url) → keep just the visible text.
+_MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
+# Bare URLs the model may cite (grounding answers love these); TTS would spell
+# them out letter by letter, so replace with a short spoken placeholder.
+_BARE_URL = re.compile(r"\b(?:https?://|www\.)\S+")
+
+
+def _clean_for_tts(text: str) -> str:
+    """Strip Markdown artifacts and URLs so Edge-TTS doesn't read them aloud."""
+    text = _MD_LINK.sub(r"\1", text)
+    text = _BARE_URL.sub("(Link)", text)
+    text = text.replace("*", "").replace("#", "").replace("- ", " ")
+    # Collapse whitespace left behind by removals.
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -139,8 +186,8 @@ async def _generate_tts_audio(text: str) -> str:
     Returns:
         Base64-encoded audio string, or empty string on failure.
     """
-    # Strip Markdown artifacts that TTS would read aloud
-    clean_text = text.replace("*", "").replace("#", "").replace("- ", " ")
+    # Strip Markdown artifacts and URLs that TTS would otherwise read aloud.
+    clean_text = _clean_for_tts(text)
 
     try:
         communicate = edge_tts.Communicate(clean_text, TTS_VOICE)
@@ -231,17 +278,22 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
     session_id = chat.session_id
     session = get_session(session_id)
 
-    async def respond(text: str, action: str = "none") -> dict:
-        """Record the exchange in session history, then build the response."""
-        record_turn(session_id, user_text, text)
+    async def respond(text: str, action: str = "none", tainted: bool = False) -> dict:
+        """Record the exchange in session history, then build the response.
+
+        `tainted` marks replies built from externally-sourced content (screen
+        capture, web search, recalled memory) so a follow-up shell command is
+        forced through HitL — see last_reply_tainted.
+        """
+        record_turn(session_id, user_text, text, tainted=tainted)
         return await _build_response(text=text, action=action)
 
     try:
         # ──────────────────────────────────────────────────────────────────
         # STEP 1: HitL Interceptor — Check for pending dangerous commands
         # ──────────────────────────────────────────────────────────────────
-        if session["pending_command"] is not None:
-            pending_cmd = session["pending_command"]
+        pending_cmd = get_pending_command(session_id)
+        if pending_cmd is not None:
             log.info("HitL ausstehender Befehl: %r — analysiere Antwort", pending_cmd)
 
             intent = analyze_user_intent(user_text, pending_cmd)
@@ -374,21 +426,37 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                         # ── 3b: shell_command → Security router ────────────
                         elif action_type == "shell_command":
                             threat_level = evaluate_security_level(payload)
+
+                            # Indirect-injection guard: if the previous reply
+                            # came from a screenshot / web search / recalled
+                            # memory, a shell command proposed now may have been
+                            # planted by injected text — force HitL regardless
+                            # of the command's own threat level.
+                            tainted_context = last_reply_tainted(session_id)
                             log.info(
-                                "Security: cmd=%r → threat_level=%s",
-                                payload, threat_level,
+                                "Security: cmd=%r → threat_level=%s tainted_ctx=%s",
+                                payload, threat_level, tainted_context,
                             )
 
-                            if threat_level >= 2:
-                                # DANGEROUS: Save to pending state, ask for permission
-                                session["pending_command"] = payload
+                            if threat_level >= 2 or tainted_context:
+                                # DANGEROUS (or injection-suspect): ask first.
+                                set_pending_command(session_id, payload)
 
-                                warning_text = (
-                                    f"Achtung! Der Befehl '{payload}' wurde als "
-                                    f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
-                                    f"Soll ich ihn trotzdem ausführen? "
-                                    f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
-                                )
+                                if tainted_context and threat_level < 2:
+                                    warning_text = (
+                                        f"Sicherheitshinweis: Der Befehl '{payload}' "
+                                        f"folgt direkt auf extern gelesene Inhalte "
+                                        f"(Screenshot/Web/Gedächtnis). Zur Sicherheit "
+                                        f"frage ich nach — soll ich ihn ausführen? "
+                                        f"Bestätige mit 'Ja' oder sage 'Nein'."
+                                    )
+                                else:
+                                    warning_text = (
+                                        f"Achtung! Der Befehl '{payload}' wurde als "
+                                        f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
+                                        f"Soll ich ihn trotzdem ausführen? "
+                                        f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
+                                    )
                                 return await respond(
                                     text=warning_text,
                                     action=f"hitl_pending: {payload}",
@@ -434,12 +502,57 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text=vision_text,
                                 action="vision_screenshot_analyzed",
+                                tainted=True,  # screen content may carry injected text
                             )
                         except Exception as e:
                             log.error("Vision Bildanalyse fehlgeschlagen: %s", e)
                             return await respond(
                                 text="Die Bildanalyse ist leider fehlgeschlagen.",
                                 action="vision_analysis_error",
+                            )
+
+                    # ── Web search (Google Search grounding) ────────────────
+                    elif fc.name == "web_search":
+                        query = fc.args.get("query", "").strip()
+                        log.info("Web-Suche angefordert: %r", query)
+                        try:
+                            search_text = search_web(query, history=session["history"])
+                            if not search_text:
+                                search_text = (
+                                    "Ich habe dazu online leider nichts Brauchbares gefunden."
+                                )
+                            return await respond(
+                                text=search_text,
+                                action=f"web_search: {query}",
+                                tainted=True,  # web results may carry injected text
+                            )
+                        except Exception as e:
+                            log.error("Web-Suche fehlgeschlagen: %s", e)
+                            return await respond(
+                                text="Die Websuche ist gerade fehlgeschlagen.",
+                                action="web_search_error",
+                            )
+
+                    # ── Memory tools (save/recall/stats) ────────────────────
+                    # AFC is off (mixed tool list), so we dispatch these
+                    # ourselves and let Gemini phrase the final answer.
+                    elif is_memory_tool(fc.name):
+                        try:
+                            memory_text = handle_memory_tool(
+                                fc, user_text, history=session["history"]
+                            )
+                            return await respond(
+                                text=memory_text,
+                                action=f"memory:{fc.name}",
+                                # recalled memory may carry injected text; save/
+                                # stats are self-generated and stay untainted.
+                                tainted=(fc.name == "recall_memory"),
+                            )
+                        except Exception as e:
+                            log.error("Memory-Tool %s fehlgeschlagen: %s", fc.name, e)
+                            return await respond(
+                                text="Beim Zugriff auf mein Gedächtnis ist etwas schiefgelaufen.",
+                                action="memory_error",
                             )
 
         # ──────────────────────────────────────────────────────────────────
