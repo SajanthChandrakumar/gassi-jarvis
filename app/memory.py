@@ -152,6 +152,7 @@ def get_session(session_id: str) -> dict[str, Any]:
             "history": [],
             "pending_command": None,
             "pending_command_ts": None,
+            "pending_action_type": None,
         }
 
     return _active_sessions[session_id]
@@ -166,12 +167,26 @@ MAX_HISTORY_ENTRIES: int = 20
 PENDING_COMMAND_TTL_SECONDS: int = 300
 
 
-def set_pending_command(session_id: str, command: str) -> None:
-    """Queue a dangerous command for HitL approval, timestamped for expiry."""
+def set_pending_command(session_id: str, command: str, action_type: str = "shell") -> None:
+    """
+    Queue an action for HitL approval, timestamped for expiry.
+
+    Args:
+        command: The payload — a shell command string, or a JSON-encoded
+                 payload for non-shell actions (e.g. a calendar event).
+        action_type: What to do on approval: 'shell' | 'calendar_create'.
+    """
     session = get_session(session_id)
     session["pending_command"] = command
     session["pending_command_ts"] = time.time()
+    session["pending_action_type"] = action_type
     _persist_sessions()
+
+
+def get_pending_action_type(session_id: str) -> str:
+    """Action type of the queued HitL payload ('shell' if unset, for
+    backward compatibility with sessions persisted before this field)."""
+    return get_session(session_id).get("pending_action_type") or "shell"
 
 
 def get_pending_command(session_id: str) -> str | None:
@@ -247,5 +262,6 @@ def clear_pending_command(session_id: str) -> None:
     session = get_session(session_id)
     session["pending_command"] = None
     session["pending_command_ts"] = None
+    session["pending_action_type"] = None
     _persist_sessions()
     log.info("Pending-Command gelöscht für: %s", session_id)
