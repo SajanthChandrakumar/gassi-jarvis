@@ -44,6 +44,7 @@ class TestSessionBasics:
             "history": [],
             "pending_command": None,
             "pending_command_ts": None,
+            "pending_action_type": None,
         }
 
     def test_get_session_is_idempotent(self):
@@ -64,6 +65,31 @@ class TestSessionBasics:
         memory.set_pending_command("s1", "sudo reboot")
         memory.clear_pending_command("s1")
         assert memory.get_session("s1")["pending_command"] is None
+
+
+# ─── Pending action types (shell vs. calendar) ────────────────────────────────
+
+
+class TestPendingActionType:
+    def test_default_type_is_shell(self):
+        memory.set_pending_command("s1", "sudo reboot")
+        assert memory.get_pending_action_type("s1") == "shell"
+
+    def test_calendar_type_round_trips(self):
+        memory.set_pending_command("s1", '{"summary": "Zahnarzt"}', action_type="calendar_create")
+        assert memory.get_pending_action_type("s1") == "calendar_create"
+        assert memory.get_pending_command("s1") == '{"summary": "Zahnarzt"}'
+
+    def test_clear_resets_type(self):
+        memory.set_pending_command("s1", "{}", action_type="calendar_create")
+        memory.clear_pending_command("s1")
+        assert memory.get_pending_action_type("s1") == "shell"
+
+    def test_legacy_session_without_field_reads_as_shell(self):
+        # Sessions persisted before the field existed have no key at all.
+        s = memory.get_session("s1")
+        del s["pending_action_type"]
+        assert memory.get_pending_action_type("s1") == "shell"
 
 
 # ─── Pending-command expiry (HitL TTL) ────────────────────────────────────────

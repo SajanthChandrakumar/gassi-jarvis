@@ -7,3 +7,5 @@ edge-tts==7.2.8
 Pillow==12.2.0
 chromadb==1.5.8
 slowapi==0.1.9
+google-api-python-client==2.198.0
+google-auth-oauthlib==1.4.0

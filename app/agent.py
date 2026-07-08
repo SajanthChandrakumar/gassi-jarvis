@@ -106,6 +106,70 @@ web_search_tool = types.Tool(
 )
 
 
+calendar_tool = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="get_calendar_events",
+            description=(
+                "Liest Termine aus dem Google-Kalender des Users. Nutze dies, wenn der "
+                "User nach seinen Terminen, seinem Tagesplan oder freien Zeiten fragt "
+                "(z.B. 'Was steht heute an?', 'Habe ich morgen etwas vor?')."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "date": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Startdatum im Format YYYY-MM-DD. Leer lassen für heute. "
+                            "Berechne relative Angaben ('morgen', 'Freitag') selbst "
+                            "anhand des heutigen Datums aus dem Systemprompt."
+                        ),
+                    ),
+                    "days": types.Schema(
+                        type=types.Type.INTEGER,
+                        description="Anzahl Tage ab Startdatum (1 = nur dieser Tag, 7 = ganze Woche).",
+                    ),
+                },
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="create_calendar_event",
+            description=(
+                "Schlägt einen neuen Termin für den Google-Kalender des Users vor. "
+                "Der Termin wird erst nach expliziter Bestätigung durch den User "
+                "eingetragen. Nutze dies, wenn der User einen Termin anlegen möchte."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "summary": types.Schema(
+                        type=types.Type.STRING,
+                        description="Kurzer Titel des Termins, z.B. 'Zahnarzt'.",
+                    ),
+                    "start": types.Schema(
+                        type=types.Type.STRING,
+                        description=(
+                            "Startzeit als ISO-Datum mit Uhrzeit, z.B. '2026-07-10T15:00:00'. "
+                            "Berechne relative Angaben selbst anhand des heutigen Datums."
+                        ),
+                    ),
+                    "end": types.Schema(
+                        type=types.Type.STRING,
+                        description="Endzeit als ISO-Datum. Leer = eine Stunde nach Start.",
+                    ),
+                    "description": types.Schema(
+                        type=types.Type.STRING,
+                        description="Optionale Notiz zum Termin.",
+                    ),
+                },
+                required=["summary", "start"],
+            ),
+        ),
+    ]
+)
+
+
 def _build_system_prompt() -> str:
     """Build the Jarvis system instruction with current date/time."""
     now = datetime.now()
@@ -125,7 +189,9 @@ def _build_system_prompt() -> str:
         "Pläne, Frust oder Fakten über sein Leben erzählt, nutze SOFORT im Hintergrund "
         "'save_memory'. Sag ihm danach in deiner Antwort beiläufig, dass du dir das gemerkt hast! "
         "3. VERGANGENHEIT NUTZEN: Bevor du Fragen zum User beantwortest, nutze IMMER 'recall_memory'. "
-        "4. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
+        "4. KALENDER: Für Fragen zu Terminen nutze 'get_calendar_events'. Zum Anlegen "
+        "eines Termins nutze 'create_calendar_event' — der User bestätigt danach mündlich. "
+        "5. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
         "in deiner Textantwort, da diese vom Audio-System (TTS) sonst laut vorgelesen werden. "
         "Sei ein mitdenkender Assistent, kein dummer Chatbot. Biete Lösungen an, bevor der User danach fragt."
     )
@@ -179,7 +245,7 @@ def get_gemini_response(
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
-            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, save_memory, recall_memory, get_memory_stats],
+            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, calendar_tool, save_memory, recall_memory, get_memory_stats],
             temperature=0.1,
         ),
     )
