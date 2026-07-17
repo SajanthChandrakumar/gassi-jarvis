@@ -40,12 +40,12 @@ def fresh_state(tmp_path):
 class TestSessionBasics:
     def test_new_session_has_expected_shape(self):
         s = memory.get_session("s1")
-        assert s == {
-            "history": [],
-            "pending_command": None,
-            "pending_command_ts": None,
-            "pending_action_type": None,
-        }
+        assert s["history"] == []
+        assert s["pending_command"] is None
+        assert s["pending_command_ts"] is None
+        assert s["pending_action_type"] is None
+        # last_active is a fresh timestamp, not a fixed value.
+        assert isinstance(s["last_active"], float)
 
     def test_get_session_is_idempotent(self):
         a = memory.get_session("s1")
@@ -146,6 +146,47 @@ class TestPersistence:
     def test_missing_file_yields_empty_state(self):
         assert not memory.SESSIONS_FILE.exists()
         assert memory._load_sessions() == {}
+
+
+# ─── Stale-session pruning (unbounded-growth guard) ───────────────────────────
+
+
+class TestSessionPruning:
+    def test_fresh_session_survives_reload(self):
+        memory.record_turn("fresh", "hi", "hallo")
+        memory._active_sessions = memory._load_sessions()
+        assert "fresh" in memory._active_sessions
+
+    def test_stale_session_is_pruned_on_load(self):
+        memory.record_turn("old", "hi", "hallo")
+        # Backdate last_active beyond the TTL.
+        memory.get_session("old")["last_active"] = (
+            time.time() - memory.SESSION_TTL_SECONDS - 1
+        )
+        memory._persist_sessions()
+
+        memory._active_sessions = memory._load_sessions()
+        assert "old" not in memory._active_sessions
+
+    def test_legacy_session_without_timestamp_is_pruned(self):
+        # Simulate a session written before last_active existed.
+        memory._active_sessions = {"legacy": {"history": [], "pending_command": None}}
+        memory._persist_sessions()
+
+        memory._active_sessions = memory._load_sessions()
+        assert "legacy" not in memory._active_sessions
+
+    def test_pruning_keeps_recent_drops_old(self):
+        memory.record_turn("keep", "hi", "hallo")
+        memory.record_turn("drop", "hi", "hallo")
+        memory.get_session("drop")["last_active"] = (
+            time.time() - memory.SESSION_TTL_SECONDS - 1
+        )
+        memory._persist_sessions()
+
+        memory._active_sessions = memory._load_sessions()
+        assert "keep" in memory._active_sessions
+        assert "drop" not in memory._active_sessions
 
 
 # ─── Indirect-injection guard (taint tracking) ────────────────────────────────

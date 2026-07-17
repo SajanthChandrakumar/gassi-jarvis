@@ -126,6 +126,28 @@ def get_recent_memories(n: int = 5) -> list[dict]:
 _DEFAULT_SESSIONS_FILE = Path(BRAIN_DIR).parent / "jarvis_sessions.json"
 SESSIONS_FILE = Path(os.environ.get("JARVIS_SESSIONS_FILE", str(_DEFAULT_SESSIONS_FILE)))
 
+# Sessions untouched for longer than this are dropped on load. The frontend
+# rotates session_id on "clear conversation", so without pruning the store
+# would grow forever with dead sessions. History is only rolling context and a
+# pending HitL command has its own 5-min TTL, so evicting an old session is safe.
+SESSION_TTL_SECONDS: int = 7 * 24 * 60 * 60  # 7 days
+
+
+def _prune_stale(sessions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Drop sessions inactive beyond SESSION_TTL_SECONDS (or with no timestamp)."""
+    now = time.time()
+    kept: dict[str, dict[str, Any]] = {}
+    dropped = 0
+    for sid, sess in sessions.items():
+        last_active = sess.get("last_active")
+        if last_active is not None and (now - last_active) <= SESSION_TTL_SECONDS:
+            kept[sid] = sess
+        else:
+            dropped += 1
+    if dropped:
+        log.info("Session-Pruning: %d veraltete Session(s) entfernt.", dropped)
+    return kept
+
 
 def _load_sessions() -> dict[str, dict[str, Any]]:
     """Load persisted sessions from disk; return empty on missing/corrupt file."""
@@ -133,7 +155,7 @@ def _load_sessions() -> dict[str, dict[str, Any]]:
         with open(SESSIONS_FILE, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            return data
+            return _prune_stale(data)
     except FileNotFoundError:
         pass
     except (json.JSONDecodeError, OSError) as e:
@@ -173,6 +195,7 @@ def get_session(session_id: str) -> dict[str, Any]:
             "pending_command": None,
             "pending_command_ts": None,
             "pending_action_type": None,
+            "last_active": time.time(),
         }
 
     return _active_sessions[session_id]
@@ -253,6 +276,7 @@ def record_turn(
     if len(session["history"]) > MAX_HISTORY_ENTRIES:
         session["history"] = session["history"][-MAX_HISTORY_ENTRIES:]
 
+    session["last_active"] = time.time()
     _persist_sessions()
 
 
