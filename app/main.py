@@ -17,6 +17,7 @@ All business logic is delegated to the respective microservice modules:
 """
 
 import base64
+import json
 import logging
 import os
 import re
@@ -33,15 +34,18 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
-from app.models import ChatRequest, ChatResponse
+from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse
 from app.memory import (
     get_session,
     clear_pending_command,
     set_pending_command,
     get_pending_command,
+    get_pending_action_type,
     record_turn,
     last_reply_tainted,
+    get_recent_memories,
 )
+from app import gcal
 from app.agent import (
     get_gemini_response,
     get_vision_response,
@@ -261,6 +265,21 @@ async def get_service_worker():
     )
 
 
+@app.get(
+    "/api/memories/recent",
+    response_model=RecentMemoriesResponse,
+    dependencies=[Depends(verify_token)],
+)
+@limiter.limit("10/minute")
+async def recent_memories(request: Request) -> RecentMemoriesResponse:
+    """
+    Zuletzt gemerkte Fakten, LLM-frei — für externe Dashboards (z.B. Homepage
+    Custom-API-Widget). Reiner ChromaDB-Read, kein Gemini-Call, keine
+    Session-/HitL-Beteiligung.
+    """
+    return RecentMemoriesResponse(memories=get_recent_memories(n=5))
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
 async def chat_with_jarvis(request: Request, chat: ChatRequest):
@@ -294,16 +313,44 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         pending_cmd = get_pending_command(session_id)
         if pending_cmd is not None:
-            log.info("HitL ausstehender Befehl: %r — analysiere Antwort", pending_cmd)
+            pending_type = get_pending_action_type(session_id)
 
-            intent = analyze_user_intent(user_text, pending_cmd)
+            # Human-readable form for the intent classifier and re-prompts —
+            # calendar payloads are JSON and would be ugly to read aloud.
+            if pending_type == "calendar_create":
+                try:
+                    pending_display = gcal.describe_event(json.loads(pending_cmd))
+                except (json.JSONDecodeError, TypeError):
+                    pending_display = pending_cmd
+            else:
+                pending_display = pending_cmd
+
+            log.info("HitL ausstehend (%s): %r — analysiere Antwort", pending_type, pending_display)
+
+            intent = analyze_user_intent(user_text, pending_display)
             log.info("HitL Intent-Klassifikation: %s", intent)
 
             if intent == "APPROVE":
-                # User hat zugestimmt → Befehl mit force=True ausführen
-                output = execute_shell_command(pending_cmd, force=True)
                 clear_pending_command(session_id)
 
+                if pending_type == "calendar_create":
+                    try:
+                        result_text = gcal.create_event(pending_cmd)
+                    except gcal.CalendarNotConfigured as e:
+                        return await respond(text=str(e), action="calendar_not_configured")
+                    except Exception as e:
+                        log.error("Kalender-Eintrag fehlgeschlagen: %s", e)
+                        return await respond(
+                            text="Der Termin konnte leider nicht eingetragen werden.",
+                            action="calendar_error",
+                        )
+                    return await respond(
+                        text=result_text,
+                        action=f"calendar_event_created: {pending_display}",
+                    )
+
+                # Default: approved shell command → execute with force=True.
+                output = execute_shell_command(pending_cmd, force=True)
                 response_text = (
                     f"Verstanden. Befehl wird ausgeführt.\n\n"
                     f"Ergebnis:\n{output}"
@@ -314,10 +361,10 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                 )
 
             elif intent == "DENY":
-                # User hat abgelehnt → Befehl verwerfen
+                # User hat abgelehnt → Aktion verwerfen
                 clear_pending_command(session_id)
                 return await respond(
-                    text="Alles klar. Befehl wurde abgebrochen. Ich führe nichts aus.",
+                    text="Alles klar. Wurde abgebrochen. Ich führe nichts aus.",
                     action="hitl_denied",
                 )
 
@@ -326,7 +373,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                 return await respond(
                     text=(
                         f"Ich konnte deine Antwort nicht eindeutig zuordnen. "
-                        f"Der ausstehende Befehl ist: '{pending_cmd}'. "
+                        f"Die ausstehende Aktion ist: '{pending_display}'. "
                         f"Sag bitte klar 'Ja, mach das' oder 'Nein, abbrechen'."
                     ),
                     action="hitl_unclear",
@@ -532,6 +579,60 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                                 text="Die Websuche ist gerade fehlgeschlagen.",
                                 action="web_search_error",
                             )
+
+                    # ── Calendar: read events ───────────────────────────────
+                    elif fc.name == "get_calendar_events":
+                        try:
+                            cal_text = gcal.list_events(
+                                date=str(fc.args.get("date", "") or ""),
+                                days=int(fc.args.get("days", 1) or 1),
+                            )
+                            return await respond(
+                                text=cal_text,
+                                action="calendar_read",
+                                # Event titles can come from other people's
+                                # invitations — treat as external content.
+                                tainted=True,
+                            )
+                        except gcal.CalendarNotConfigured as e:
+                            return await respond(text=str(e), action="calendar_not_configured")
+                        except Exception as e:
+                            log.error("Kalender-Abruf fehlgeschlagen: %s", e)
+                            return await respond(
+                                text="Ich komme gerade nicht an deinen Kalender heran.",
+                                action="calendar_error",
+                            )
+
+                    # ── Calendar: create event (HitL-gated) ─────────────────
+                    elif fc.name == "create_calendar_event":
+                        summary = str(fc.args.get("summary", "") or "").strip()
+                        start = str(fc.args.get("start", "") or "").strip()
+                        if not summary or not start:
+                            return await respond(
+                                text="Mir fehlt noch Titel oder Startzeit für den Termin.",
+                                action="calendar_event_incomplete",
+                            )
+                        event = {
+                            "summary": summary,
+                            "start": start,
+                            "end": str(fc.args.get("end", "") or ""),
+                            "description": str(fc.args.get("description", "") or ""),
+                        }
+                        try:
+                            display = gcal.describe_event(event)
+                        except Exception:
+                            display = summary
+                        set_pending_command(
+                            session_id, json.dumps(event, ensure_ascii=False),
+                            action_type="calendar_create",
+                        )
+                        return await respond(
+                            text=(
+                                f"Ich würde eintragen: {display}. "
+                                f"Soll ich das machen? Bestätige mit 'Ja' oder sage 'Nein'."
+                            ),
+                            action=f"hitl_pending: {display}",
+                        )
 
                     # ── Memory tools (save/recall/stats) ────────────────────
                     # AFC is off (mixed tool list), so we dispatch these

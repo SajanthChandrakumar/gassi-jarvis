@@ -25,6 +25,7 @@ Gassi-Jarvis is the result: a Large Action Model that lives on my Mac, exposes i
 - **Sees the screen.** Takes silent macOS screenshots and feeds them to Gemini Vision for visual Q&A.
 - **Knows what's current.** Google Search grounding for live facts — weather, news, prices — while still answering static questions from the model directly.
 - **Runs commands — safely.** A layered security router classifies every shell command. Dangerous commands route through a Human-in-the-Loop voice approval flow before executing.
+- **Knows your calendar.** Reads your Google Calendar ("Was steht heute an?") and creates events by voice — every new event is confirmed via the same HitL flow before it's written.
 - **Reaches your phone.** FastAPI backend behind ngrok/Tailscale + bearer-token auth, so the assistant follows you anywhere.
 
 ---
@@ -138,7 +139,22 @@ Open `http://localhost:8000` for the PWA, or `http://localhost:8000/docs` for th
 
 `--forwarded-allow-ips` lets the app trust the `X-Forwarded-For` header from your tunnel, so per-client rate limiting keys on the real phone/IP instead of the tunnel's localhost peer.
 
-### 5. Reach it from your phone
+### 5. Google Calendar (optional)
+
+Jarvis can read your calendar and (after voice confirmation) create events.
+One-time setup:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/) (same project as your Gemini key is fine): **APIs & Services → Enable APIs → Google Calendar API**.
+2. **Credentials → Create Credentials → OAuth client ID → Desktop app**, download the JSON and save it as `gcal_credentials.json` in the project root.
+3. Run the one-time browser login:
+   ```bash
+   python -m app.gcal
+   ```
+   The token lands in `gcal_token.json` (both files are gitignored; paths overridable via `JARVIS_GCAL_CREDENTIALS` / `JARVIS_GCAL_TOKEN`).
+
+Scope is `calendar.events` only (least privilege — no calendar management). Without this setup, calendar questions get a friendly hint instead of an error.
+
+### 6. Reach it from your phone
 
 Either:
 
@@ -196,6 +212,53 @@ Response:
 }
 ```
 
+`GET /api/memories/recent`
+
+Lightweight, LLM-free endpoint for external dashboards (e.g. a
+[Homepage](https://gethomepage.dev) Custom API widget) to poll recently
+saved facts without triggering a Gemini call — same bearer-token auth as
+`/api/chat`, own rate limit (10/min).
+
+```json
+{
+  "memories": [
+    {"text": "Sajanth mag Kaffee ohne Zucker", "timestamp": "2026-07-11T22:43:43.958518"}
+  ]
+}
+```
+
+---
+
+## Optional: Homepage Boot-Dashboard
+
+Gassi-Jarvis is meant to be used throughout the day, not just on walks — so
+rather than building a dashboard screen into the chat PWA, the recommended
+setup pairs Jarvis with [Homepage](https://gethomepage.dev) as a separate
+landing page: native widgets for weather (Open-Meteo), calendar (Google
+Calendar's *secret* iCal address — not the public one), Mac resource/Docker
+status, and search — all without touching Jarvis's backend. The **only**
+call Jarvis's backend makes for this dashboard is serving
+`/api/memories/recent` to Homepage's Custom API widget, polled every ~10
+minutes. Everything else Homepage fetches directly on its own.
+
+```yaml
+# Custom API widget pointing at Jarvis
+widget:
+  type: customapi
+  url: http://<mac-tailscale-ip>:8000/api/memories/recent
+  method: GET
+  refreshInterval: 600000 # 10 minutes — memories rarely change
+  headers:
+    Authorization: Bearer ${JARVIS_API_TOKEN}
+  display: dynamic-list
+  mappings:
+    - field: memories
+      label: Zuletzt gemerkt
+```
+
+Bookmark Homepage as your phone's home screen; a tile on it links into the
+Jarvis PWA for actual conversations.
+
 ---
 
 ## Roadmap
@@ -211,10 +274,12 @@ Response:
 - [x] Token TTL (12h) on the PWA
 - [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
 - [x] Installable PWA (web manifest, maskable icons, service worker)
+- [x] Google Calendar: voice read access + HitL-gated event creation
 - [x] Live web knowledge via Google Search grounding (read-only)
 - [x] Disk-persistent sessions (history + pending HitL command survive restarts)
 - [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
 - [x] Pending-command TTL and per-client rate limiting behind the tunnel
+- [x] LLM-free `/api/memories/recent` endpoint for external dashboards (Homepage integration)
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
 - [ ] Apple Watch companion for wrist-first, hands-free walks

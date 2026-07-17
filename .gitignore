@@ -36,3 +36,7 @@ jarvis_brain/
 # Persistierte Session-States (enthalten Gesprächsverlauf)
 jarvis_sessions.json
 jarvis_sessions.json.tmp
+
+# Google-Calendar-OAuth (Client-Secret + User-Token)
+gcal_credentials.json
+gcal_token.json

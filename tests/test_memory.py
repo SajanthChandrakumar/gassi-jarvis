@@ -44,6 +44,7 @@ class TestSessionBasics:
             "history": [],
             "pending_command": None,
             "pending_command_ts": None,
+            "pending_action_type": None,
         }
 
     def test_get_session_is_idempotent(self):
@@ -64,6 +65,31 @@ class TestSessionBasics:
         memory.set_pending_command("s1", "sudo reboot")
         memory.clear_pending_command("s1")
         assert memory.get_session("s1")["pending_command"] is None
+
+
+# ─── Pending action types (shell vs. calendar) ────────────────────────────────
+
+
+class TestPendingActionType:
+    def test_default_type_is_shell(self):
+        memory.set_pending_command("s1", "sudo reboot")
+        assert memory.get_pending_action_type("s1") == "shell"
+
+    def test_calendar_type_round_trips(self):
+        memory.set_pending_command("s1", '{"summary": "Zahnarzt"}', action_type="calendar_create")
+        assert memory.get_pending_action_type("s1") == "calendar_create"
+        assert memory.get_pending_command("s1") == '{"summary": "Zahnarzt"}'
+
+    def test_clear_resets_type(self):
+        memory.set_pending_command("s1", "{}", action_type="calendar_create")
+        memory.clear_pending_command("s1")
+        assert memory.get_pending_action_type("s1") == "shell"
+
+    def test_legacy_session_without_field_reads_as_shell(self):
+        # Sessions persisted before the field existed have no key at all.
+        s = memory.get_session("s1")
+        del s["pending_action_type"]
+        assert memory.get_pending_action_type("s1") == "shell"
 
 
 # ─── Pending-command expiry (HitL TTL) ────────────────────────────────────────
@@ -147,3 +173,54 @@ class TestTaintTracking:
         memory.record_turn("s1", "schau screen", "extern", tainted=True)
         memory._active_sessions = memory._load_sessions()
         assert memory.last_reply_tainted("s1") is True
+
+
+# ─── Recent memories (LLM-free dashboard endpoint) ────────────────────────────
+
+
+class TestRecentMemories:
+    @pytest.fixture(autouse=True)
+    def clean_collection(self):
+        """Isolate ChromaDB content between tests in this class."""
+        existing = memory.collection.get()["ids"]
+        if existing:
+            memory.collection.delete(ids=existing)
+        yield
+        existing = memory.collection.get()["ids"]
+        if existing:
+            memory.collection.delete(ids=existing)
+
+    def test_empty_collection_returns_empty_list(self):
+        assert memory.get_recent_memories() == []
+
+    def test_returns_newest_first(self):
+        memory.collection.add(
+            documents=["älter"],
+            metadatas=[{"timestamp": "2026-01-01T10:00:00"}],
+            ids=["mem_a"],
+        )
+        memory.collection.add(
+            documents=["neuer"],
+            metadatas=[{"timestamp": "2026-01-02T10:00:00"}],
+            ids=["mem_b"],
+        )
+        result = memory.get_recent_memories()
+        assert [m["text"] for m in result] == ["neuer", "älter"]
+
+    def test_respects_n_limit(self):
+        for i in range(5):
+            memory.collection.add(
+                documents=[f"fakt {i}"],
+                metadatas=[{"timestamp": f"2026-01-0{i+1}T10:00:00"}],
+                ids=[f"mem_{i}"],
+            )
+        assert len(memory.get_recent_memories(n=2)) == 2
+
+    def test_each_entry_has_text_and_timestamp(self):
+        memory.collection.add(
+            documents=["ein fakt"],
+            metadatas=[{"timestamp": "2026-01-01T10:00:00"}],
+            ids=["mem_x"],
+        )
+        entry = memory.get_recent_memories()[0]
+        assert entry == {"text": "ein fakt", "timestamp": "2026-01-01T10:00:00"}
