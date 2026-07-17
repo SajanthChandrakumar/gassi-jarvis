@@ -11,7 +11,7 @@ Run from the project root:
 
 import os
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 os.environ.setdefault("JARVIS_BRAIN_DIR", tempfile.mkdtemp(prefix="jarvis_gcal_brain_"))
 os.environ.setdefault(
@@ -34,6 +34,29 @@ class TestParseDay:
 
     def test_garbage_falls_back_to_today(self):
         assert gcal.parse_day("morgen um drei").date() == datetime.now().date()
+
+    def test_fallback_is_also_timezone_aware(self):
+        # Even the today-fallback must be tz-aware, else timeMin/timeMax in
+        # list_events would mix naive/aware datetimes and the Google API rejects it.
+        assert gcal.parse_day("kaputt").tzinfo is not None
+
+
+class TestParseDt:
+    def test_naive_iso_gets_local_timezone(self):
+        # Google all-day/naive values must not stay naive — they'd break
+        # comparisons and .isoformat() sent to the API.
+        dt = gcal._parse_dt("2026-07-10T15:00:00")
+        assert dt.tzinfo is not None
+
+    def test_aware_iso_preserves_offset(self):
+        dt = gcal._parse_dt("2026-07-10T15:00:00+02:00")
+        assert dt.utcoffset() == timedelta(hours=2)
+
+    def test_aware_utc_is_preserved(self):
+        dt = gcal._parse_dt("2026-07-10T13:00:00+00:00")
+        assert dt.utcoffset() == timedelta(0)
+        # Same instant as 15:00 in +02:00.
+        assert dt == datetime(2026, 7, 10, 13, 0, tzinfo=timezone.utc)
 
 
 class TestGermanFormatting:
