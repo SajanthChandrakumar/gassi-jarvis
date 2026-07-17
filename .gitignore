@@ -37,6 +37,9 @@ jarvis_brain/
 jarvis_sessions.json
 jarvis_sessions.json.tmp
 
+# Persönliche Task-Inbox
+jarvis_inbox.md
+
 # Google-Calendar-OAuth (Client-Secret + User-Token)
 gcal_credentials.json
 gcal_token.json

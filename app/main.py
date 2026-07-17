@@ -46,6 +46,7 @@ from app.memory import (
     get_recent_memories,
 )
 from app import gcal
+from app import inbox
 from app.agent import (
     get_gemini_response,
     get_vision_response,
@@ -632,6 +633,20 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                                 f"Soll ich das machen? Bestätige mit 'Ja' oder sage 'Nein'."
                             ),
                             action=f"hitl_pending: {display}",
+                        )
+
+                    # ── Task inbox: capture ─────────────────────────────────
+                    elif fc.name == "capture_task":
+                        result = inbox.add_task(str(fc.args.get("task", "") or ""))
+                        return await respond(text=result, action="task_captured")
+
+                    # ── Task inbox: list open tasks ─────────────────────────
+                    elif fc.name == "list_tasks":
+                        return await respond(
+                            text=inbox.list_tasks(),
+                            action="task_list",
+                            # Tasks are the user's own dictated text, not
+                            # externally-sourced — no injection taint.
                         )
 
                     # ── Memory tools (save/recall/stats) ────────────────────

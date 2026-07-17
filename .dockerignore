@@ -6,6 +6,7 @@ __pycache__/
 .git/
 jarvis_brain/
 jarvis_sessions.json
+jarvis_inbox.md
 .pytest_cache/
 .vscode/
 .idea/

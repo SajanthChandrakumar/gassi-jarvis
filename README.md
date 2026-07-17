@@ -26,6 +26,7 @@ Gassi-Jarvis is the result: a Large Action Model that lives on my Mac, exposes i
 - **Knows what's current.** Google Search grounding for live facts — weather, news, prices — while still answering static questions from the model directly.
 - **Runs commands — safely.** A layered security router classifies every shell command. Dangerous commands route through a Human-in-the-Loop voice approval flow before executing.
 - **Knows your calendar.** Reads your Google Calendar ("Was steht heute an?") and creates events by voice — every new event is confirmed via the same HitL flow before it's written.
+- **Captures tasks on the go.** "Jarvis, notier: X" drops a task into a plain Markdown inbox; "Was steht auf meiner Liste?" reads back what's open. Point `JARVIS_INBOX_FILE` at an Obsidian vault to sync.
 - **Reaches your phone.** FastAPI backend behind ngrok/Tailscale + bearer-token auth, so the assistant follows you anywhere.
 
 ---
@@ -127,6 +128,7 @@ JARVIS_LOG_LEVEL=INFO            # DEBUG | INFO | WARNING | ERROR
 JARVIS_SHELL_CWD=/path/to/sandbox
 JARVIS_BRAIN_DIR=/path/to/chromadb
 JARVIS_SESSIONS_FILE=/path/to/jarvis_sessions.json
+JARVIS_INBOX_FILE=/path/to/jarvis_inbox.md   # or an Obsidian vault note
 ```
 
 ### 4. Run
@@ -280,6 +282,7 @@ Jarvis PWA for actual conversations.
 - [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
 - [x] Pending-command TTL and per-client rate limiting behind the tunnel
 - [x] LLM-free `/api/memories/recent` endpoint for external dashboards (Homepage integration)
+- [x] Voice task capture to a Markdown inbox ("Jarvis, notier: X" / "Was steht auf meiner Liste?")
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
 - [ ] Apple Watch companion for wrist-first, hands-free walks
