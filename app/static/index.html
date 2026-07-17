@@ -170,6 +170,12 @@
         .icon-btn:hover { color: var(--text-main); border-color: var(--border-strong); background: var(--surface-strong); }
         .icon-btn:active { transform: scale(0.92); }
         .icon-btn svg { width: 18px; height: 18px; }
+        .icon-btn.active {
+            color: var(--accent-blue);
+            border-color: rgba(59, 130, 246, 0.5);
+            background: rgba(59, 130, 246, 0.12);
+            box-shadow: 0 0 14px rgba(59, 130, 246, 0.25);
+        }
 
         /* ─── Transcript ──────────────────────────────────────────── */
         #transcript {
@@ -262,7 +268,6 @@
         }
         .chip svg { width: 13px; height: 13px; }
         .chip.vision { background: rgba(139, 92, 246, 0.12); border-color: rgba(139, 92, 246, 0.25); color: #c4b5fd; }
-        .chip.warn   { background: rgba(245, 158, 11, 0.12); border-color: rgba(245, 158, 11, 0.28); color: #fcd34d; }
         .chip.danger { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.28); color: #fca5a5; }
 
         /* HitL approval card */
@@ -510,6 +515,13 @@
                     <div class="date-day" id="dayText"></div>
                     <div class="date-date" id="dateText"></div>
                 </div>
+                <button class="icon-btn" id="handsFreeBtn" aria-label="Freisprech-Modus umschalten" aria-pressed="false" title="Freisprech-Modus">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 14v-3a9 9 0 0 1 18 0v3"></path>
+                        <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3z"></path>
+                        <path d="M3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"></path>
+                    </svg>
+                </button>
                 <button class="icon-btn" id="clearBtn" aria-label="Konversation löschen" title="Neue Konversation">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M3 6h18"></path><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -613,10 +625,33 @@
         const textInput = document.getElementById('textInput');
         const sendBtn = document.getElementById('sendBtn');
         const clearBtn = document.getElementById('clearBtn');
+        const handsFreeBtn = document.getElementById('handsFreeBtn');
 
         let isSpeaking = false;
         let currentAbortController = null;
         let typingEl = null;
+
+        // ─── Hands-free mode ────────────────────────────────────────────────
+        // When on, the mic re-opens automatically after Jarvis finishes
+        // speaking, so a whole exchange works without touching the phone.
+        // The browser's own silence timeout closes the window if nothing
+        // is said — there is no manual timer to manage.
+        const HF_KEY = 'jarvis_handsfree';
+        let handsFree = localStorage.getItem(HF_KEY) === '1';
+        let tryAutoListen = () => {};   // real impl assigned if SpeechRecognition exists
+
+        function renderHandsFree() {
+            handsFreeBtn.classList.toggle('active', handsFree);
+            handsFreeBtn.setAttribute('aria-pressed', String(handsFree));
+        }
+        renderHandsFree();
+
+        handsFreeBtn.addEventListener('click', () => {
+            handsFree = !handsFree;
+            localStorage.setItem(HF_KEY, handsFree ? '1' : '0');
+            renderHandsFree();
+            if (handsFree) tryAutoListen();
+        });
 
         // ─── Date ──────────────────────────────────────────────────────────
         function updateDate() {
@@ -678,6 +713,7 @@
         const ICON_EYE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
         const ICON_APP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>';
         const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>';
+        const ICON_CAL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>';
 
         function chipFor(action) {
             if (!action) return null;
@@ -687,6 +723,10 @@
                 return { cls: '', icon: ICON_APP, label: 'App geöffnet' };
             if (action === 'vision_screenshot_analyzed')
                 return { cls: 'vision', icon: ICON_EYE, label: 'Bildschirm analysiert' };
+            if (action === 'calendar_read')
+                return { cls: '', icon: ICON_CAL, label: 'Kalender gelesen' };
+            if (action.startsWith('calendar_event_created'))
+                return { cls: '', icon: ICON_CAL, label: 'Termin eingetragen' };
             if (action === 'hitl_denied')
                 return { cls: 'danger', icon: ICON_X, label: 'Abgebrochen' };
             return null;
@@ -797,12 +837,14 @@
 
                 if (data.audio_base64) {
                     audioPlayer.src = 'data:audio/mp3;base64,' + data.audio_base64;
-                    audioPlayer.onended = () => { isSpeaking = false; setState('ready'); };
+                    audioPlayer.onended = () => { isSpeaking = false; setState('ready'); tryAutoListen(); };
                     isSpeaking = true;
                     setState('speaking');
+                    // play() blocked → don't grab the mic either; stay quietly ready.
                     audioPlayer.play().catch(() => { isSpeaking = false; setState('ready'); });
                 } else {
                     setState('ready');
+                    tryAutoListen();
                 }
             } catch (error) {
                 if (error.name === 'AbortError') {
@@ -836,11 +878,23 @@
 
         if (!SpeechRecognition) {
             micBtn.classList.add('mic-off');
+            handsFreeBtn.style.display = 'none';
             stateLabel.innerText = 'Sprache n/a';
         } else {
             const recognition = new SpeechRecognition();
             recognition.lang = 'de-DE';
             recognition.interimResults = false;
+
+            // Re-open the mic after Jarvis finishes a turn (hands-free loop).
+            // Short delay so audio output fully releases before capture starts.
+            tryAutoListen = () => {
+                setTimeout(() => {
+                    if (!handsFree || isSpeaking) return;
+                    if (body.classList.contains('listening') || body.classList.contains('thinking')) return;
+                    try { recognition.start(); setState('listening'); }
+                    catch (e) { /* mic already running */ }
+                }, 350);
+            };
 
             micBtn.addEventListener('click', () => {
                 // Interrupt: if Jarvis is thinking or speaking, kill it and listen.
@@ -875,6 +929,9 @@
 
             recognition.onerror = (event) => {
                 setState('ready');
+                // In hands-free mode an empty listen window is the normal way
+                // the loop ends — no error flash, just back to ready.
+                if (handsFree && (event.error === 'no-speech' || event.error === 'aborted')) return;
                 let txt = 'Spracherkennung: ' + event.error;
                 if (event.error === 'not-allowed') txt = 'Mikrofon-Zugriff blockiert.';
                 else if (event.error === 'no-speech') txt = 'Keine Sprache erkannt.';

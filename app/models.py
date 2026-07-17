@@ -71,3 +71,19 @@ class ChatResponse(BaseModel):
     jarvis_response: str
     audio_base64: str = ""
     action_taken: str = "none"
+
+
+class RecentMemoriesResponse(BaseModel):
+    """
+    Response schema for GET /api/memories/recent.
+
+    A lightweight, LLM-free endpoint for external dashboards (e.g. Homepage's
+    Custom API widget) to display recently saved facts without triggering a
+    Gemini call.
+
+    Attributes:
+        memories: Up to n most recently saved facts, newest first. Each entry
+                   has 'text' (the saved fact) and 'timestamp' (ISO-8601).
+    """
+
+    memories: list[dict] = []
