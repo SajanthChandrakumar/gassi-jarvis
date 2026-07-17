@@ -34,7 +34,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
-from app.models import ChatRequest, ChatResponse
+from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse
 from app.memory import (
     get_session,
     clear_pending_command,
@@ -43,6 +43,7 @@ from app.memory import (
     get_pending_action_type,
     record_turn,
     last_reply_tainted,
+    get_recent_memories,
 )
 from app import gcal
 from app.agent import (
@@ -262,6 +263,21 @@ async def get_service_worker():
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.get(
+    "/api/memories/recent",
+    response_model=RecentMemoriesResponse,
+    dependencies=[Depends(verify_token)],
+)
+@limiter.limit("10/minute")
+async def recent_memories(request: Request) -> RecentMemoriesResponse:
+    """
+    Zuletzt gemerkte Fakten, LLM-frei — für externe Dashboards (z.B. Homepage
+    Custom-API-Widget). Reiner ChromaDB-Read, kein Gemini-Call, keine
+    Session-/HitL-Beteiligung.
+    """
+    return RecentMemoriesResponse(memories=get_recent_memories(n=5))
 
 
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])

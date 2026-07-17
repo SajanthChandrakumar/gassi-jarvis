@@ -212,6 +212,53 @@ Response:
 }
 ```
 
+`GET /api/memories/recent`
+
+Lightweight, LLM-free endpoint for external dashboards (e.g. a
+[Homepage](https://gethomepage.dev) Custom API widget) to poll recently
+saved facts without triggering a Gemini call — same bearer-token auth as
+`/api/chat`, own rate limit (10/min).
+
+```json
+{
+  "memories": [
+    {"text": "Sajanth mag Kaffee ohne Zucker", "timestamp": "2026-07-11T22:43:43.958518"}
+  ]
+}
+```
+
+---
+
+## Optional: Homepage Boot-Dashboard
+
+Gassi-Jarvis is meant to be used throughout the day, not just on walks — so
+rather than building a dashboard screen into the chat PWA, the recommended
+setup pairs Jarvis with [Homepage](https://gethomepage.dev) as a separate
+landing page: native widgets for weather (Open-Meteo), calendar (Google
+Calendar's *secret* iCal address — not the public one), Mac resource/Docker
+status, and search — all without touching Jarvis's backend. The **only**
+call Jarvis's backend makes for this dashboard is serving
+`/api/memories/recent` to Homepage's Custom API widget, polled every ~10
+minutes. Everything else Homepage fetches directly on its own.
+
+```yaml
+# Custom API widget pointing at Jarvis
+widget:
+  type: customapi
+  url: http://<mac-tailscale-ip>:8000/api/memories/recent
+  method: GET
+  refreshInterval: 600000 # 10 minutes — memories rarely change
+  headers:
+    Authorization: Bearer ${JARVIS_API_TOKEN}
+  display: dynamic-list
+  mappings:
+    - field: memories
+      label: Zuletzt gemerkt
+```
+
+Bookmark Homepage as your phone's home screen; a tile on it links into the
+Jarvis PWA for actual conversations.
+
 ---
 
 ## Roadmap
@@ -232,6 +279,7 @@ Response:
 - [x] Disk-persistent sessions (history + pending HitL command survive restarts)
 - [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
 - [x] Pending-command TTL and per-client rate limiting behind the tunnel
+- [x] LLM-free `/api/memories/recent` endpoint for external dashboards (Homepage integration)
 - [ ] Local wake-word detection (Porcupine / Picovoice)
 - [ ] WebSocket audio streaming for sub-second turn-taking
 - [ ] Apple Watch companion for wrist-first, hands-free walks
