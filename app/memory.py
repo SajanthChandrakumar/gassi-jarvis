@@ -96,6 +96,26 @@ def get_memory_stats() -> str:
     return f"Mein Langzeitgedächtnis umfasst aktuell {count} gespeicherte Wissensfragmente."
 
 
+def get_recent_memories(n: int = 5) -> list[dict]:
+    """
+    Die n zuletzt gespeicherten Fakten, neueste zuerst.
+
+    Reine lokale ChromaDB-Abfrage (kein Gemini-Call) — gedacht für externe
+    Dashboards (z.B. Homepage Custom-API-Widget), die nur einen Blick auf
+    zuletzt Gemerktes werfen wollen, ohne eine LLM-Anfrage auszulösen.
+    """
+    data = collection.get(include=["documents", "metadatas"])
+    paired = sorted(
+        zip(data["documents"], data["metadatas"]),
+        key=lambda p: p[1].get("timestamp", ""),
+        reverse=True,
+    )
+    return [
+        {"text": doc, "timestamp": meta.get("timestamp", "")}
+        for doc, meta in paired[:n]
+    ]
+
+
 # ─── Session State Management (disk-backed, HitL-aware) ───────────────────────
 #
 # Sessions persist to a JSON file so a server restart doesn't drop the
