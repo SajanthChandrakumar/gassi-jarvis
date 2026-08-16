@@ -10,3 +10,6 @@ slowapi==0.1.9
 google-api-python-client==2.198.0
 google-auth-oauthlib==1.4.0
 openbb==4.7.2
+scipy==1.18.0
+statsmodels==0.14.6
+vectorbt==1.1.0
