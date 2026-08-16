@@ -48,6 +48,86 @@ graph TD
 | **`logging_config.py`** | **Observability** | Central logging setup; verbosity toggled via `JARVIS_LOG_LEVEL`. Quiets noisy third-party loggers (chromadb, httpx). |
 | **`static/`** | **Installable PWA** | `index.html` (conversation transcript + inline HitL approval cards, token-TTL auth, AbortController kill-switch), `manifest.json` + maskable icons, and `sw.js` (network-first navigation, cache-first static, never intercepts `/api/*`). |
 
+## Trading Module Boundary
+
+Trading is a bounded domain module of Jarvis, not a replacement for the
+assistant. `app/trading/domain/` holds the Phase-0.5 financial data contract;
+future subpackages may cover `portfolio`, `analytics`, `market_data`,
+`backtesting`, `risk`, and `strategies`; corresponding tests belong in
+`tests/trading/`.
+
+Jarvis and Gemini may eventually orchestrate tools and explain their results,
+but all financial state, portfolio calculations, P&L, risk metrics, and
+backtests must be computed and owned by deterministic Python code within this
+module. LLM output is therefore never authoritative financial state or a
+trading decision. Its financial source of truth will be append-only structured
+events, not ChromaDB, session JSON, or conversation history. Exchange
+integrations, paper trading, and live execution are explicitly out of scope.
+
+The complete contract — including exact money values, UTC timestamps,
+provenance, corrections, derived-state rules, approvals, and the storage
+protocol — is in [`docs/trading-financial-contract.md`](docs/trading-financial-contract.md).
+
+### Research Data Backbone (Phase 1)
+
+`app.trading.research.OpenBBResearchClient` is the provider-agnostic boundary
+for raw financial research data. It uses OpenBB behind a small Jarvis-facing
+interface for equity/ETF and crypto price history, company profiles, financial
+statements, earnings calendars, and macroeconomic indicator series.
+
+```text
+Jarvis research layer -> OpenBB -> financial data providers
+```
+
+The adapter returns structured raw data and provider/retrieval provenance; it
+does not invoke Gemini, interpret data, rank findings, calculate indicators, or
+produce investment recommendations. Provider details and optional credentials
+remain inside OpenBB configuration. VectorBT, portfolio analysis, backtesting,
+and statistical research are later phases.
+
+### Canonical Research Data (Phase 2)
+
+Phase 1 OpenBB responses are normalized by `app.trading.research` before later
+research components consume them:
+
+```text
+OpenBB -> provider responses -> normalization layer -> canonical research data -> future research engine
+```
+
+Canonical observations are immutable and provider-agnostic. They preserve an
+asset identity, per-section provenance, an `as_of` observation timestamp,
+separate UTC `retrieved_at` timestamp, deterministic quality/freshness state,
+and explicit missing values (`None` never means zero). The selective
+`CanonicalResearchService` fetches only requested sections and reports failed
+optional sections without discarding successful ones. Its small per-process
+cache is an optimization only: cache keys include provider and all relevant
+request dimensions, and stale entries are refreshed unless explicitly allowed
+and visibly marked stale.
+
+The detailed Phase-2 contract is in
+[`docs/canonical-research-data.md`](docs/canonical-research-data.md).
+
+### Research & Relevance Engine (Phase 3)
+
+Phase 3 sits strictly after canonical normalization and before any future
+Jarvis/Gemini explanation:
+
+```text
+Canonical Research Data -> Evaluators -> Candidate Findings -> Relevance Scoring
+-> Deduplication -> Diversity Selection -> Top Findings
+```
+
+`app.trading.research.ResearchRelevanceEngine` is deterministic,
+provider-independent Python. It creates structured, evidence-backed findings
+about material price/volume, fundamental, earnings, macro, crypto-market, and
+data-quality conditions; it does not call Gemini, predict returns, or issue
+ratings. It preserves canonical provenance and quality, makes partial/stale
+data explicit, and keeps relevance (investigation priority) separate from
+confidence (evidence sufficiency). Historical valuation and estimates findings
+remain unavailable until their respective Phase-2 historical canonical data
+exists. The detailed contract and transparent score formula are in
+[`docs/research-relevance-engine.md`](docs/research-relevance-engine.md).
+
 ### Static Serving Routes
 
 - `GET /` → serves the PWA `index.html`.
@@ -77,6 +157,15 @@ Gemini's automatic function calling (AFC) is **disabled** whenever the tool list
 - **`take_screenshot`** → `vision.py` → Gemini Vision follow-up call.
 - **`web_search`** → `agent.search_web`, a **separate grounding-only call** (Google Search grounding cannot share a request with function declarations). Read-only: the model reads results and answers, it never gains a way to act on the web.
 - **`save/recall/get_memory`** → `agent.handle_memory_tool` runs the ChromaDB operation, then feeds the result back to Gemini for a natural-language reply.
+
+The current explicit dispatch is appropriate while the tool set is small: it
+makes every action path and its Human-in-the-Loop boundary visible in
+`main.py`. Before several independent trading tools are introduced, extract a
+small, explicit dispatcher or registry whose handlers declare their tool name,
+validation, taint behaviour, and approval policy. It must remain invoked by
+`main.py`, and sensitive handlers must continue to route through the existing
+security and approval gates; this is not a case for Gemini automatic execution
+or a general plugin framework.
 
 ---
 
