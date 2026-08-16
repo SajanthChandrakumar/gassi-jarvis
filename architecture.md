@@ -128,6 +128,71 @@ remain unavailable until their respective Phase-2 historical canonical data
 exists. The detailed contract and transparent score formula are in
 [`docs/research-relevance-engine.md`](docs/research-relevance-engine.md).
 
+### Asset Research Reports (Phase 4)
+
+Phase 4 composes the existing canonical research data and Phase-3 findings; it
+does not fetch data, compute relevance, or require Gemini:
+
+```text
+OpenBB -> Canonical Data -> Relevance Engine -> Structured Findings
+       -> Report Builder -> Structured Asset Research Report
+```
+
+`app.trading.research.AssetResearchReportService` produces immutable,
+deterministically serializable reports with stable equity, crypto, and ETF
+section ordering. The structured report preserves finding IDs, evidence,
+quality, freshness, coverage state, and compact source attribution. Report
+depth (`brief`, `standard`, `detailed`) changes presentation limits only;
+unsupported data stays explicit and absent data is never rendered as a zero or
+an invented section. A future LLM can render this output, but can never replace
+its deterministic financial content. The detailed contract is in
+[`docs/asset-research-reports.md`](docs/asset-research-reports.md).
+
+### Statistical Research Engine (Phase 6)
+
+Phase 6 is a separate deterministic branch from canonical time series. It
+does not fetch providers and does not give Gemini any calculation authority:
+
+```text
+OpenBB -> Canonical Research Data
+              |                 |
+              v                 v
+       Historical Research   Statistical Engine
+                            - returns/alignment
+                            - correlation and rolling correlation
+                            - OLS/beta
+                            - distributions/z-scores
+                            - regime tests and volatility
+```
+
+`app.trading.research.StatisticalResearchService` uses explicit simple or log
+returns and an exact UTC timestamp intersection without forward filling. Its
+provider-independent results retain inputs, provenance, data quality,
+freshness, sample ranges, parameters, assumptions, and explicit
+insufficient-data/invalid-input states. Significance and effect size are kept
+separate, and no result implies causality. Details are in
+[`docs/statistical-research.md`](docs/statistical-research.md).
+
+### Historical Research (Phase 5)
+
+`HistoricalResearchService` uses canonical price history to construct explicit
+events, complete forward-return windows, historical regime samples, and
+VectorBT-backed normalized drawdown episodes. It retains provenance, quality,
+frequency, parameters, and look-ahead warnings. Phase 5 constructs historical
+cases; Phase 6 performs statistical inference on such samples. See
+[`docs/historical-research.md`](docs/historical-research.md).
+
+### Natural-Language Quant Research (Phase 7)
+
+Phase 7 is the controlled, read-only bridge from Jarvis to the deterministic research layers:
+
+```text
+Gemini tool choice -> validated ResearchRequest -> resolver + approved plan
+                 -> canonical data -> Phase 3-6 result -> validated response
+```
+
+`ResearchOrchestrator` owns deterministic asset resolution, minimal data requests, and execution of asset reports, comparisons, historical volatility event studies, and correlation/beta. Gemini receives only four high-level tools and cannot choose OpenBB routes, chain calculation primitives, or alter the resulting financial values. `ResearchResponse` preserves canonical identity, provenance, warnings, sample context, partial failures, and the execution trace before any presentation. The tools are research-only: they cannot access exchanges, portfolios, transactions, or order placement. See [`docs/natural-language-quant-research.md`](docs/natural-language-quant-research.md).
+
 ### Static Serving Routes
 
 - `GET /` → serves the PWA `index.html`.

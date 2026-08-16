@@ -56,9 +56,18 @@ from app.agent import (
 )
 from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
+from app.trading.research.jarvis_tools import (
+    JarvisResearchTools,
+    render_research_response,
+    response_payload,
+)
 
 setup_logging()
 log = logging.getLogger(__name__)
+
+# The OpenBB client behind this adapter is lazy; construction itself performs
+# neither network access nor financial calculations.
+research_tools = JarvisResearchTools()
 
 # ─── Server Setup ─────────────────────────────────────────────────────────────
 
@@ -214,6 +223,7 @@ async def _build_response(
     text: str,
     action: str = "none",
     generate_audio: bool = True,
+    research_payload: dict | None = None,
 ) -> dict:
     """
     Build the standard JSON response dict with optional TTS audio.
@@ -233,6 +243,7 @@ async def _build_response(
         "jarvis_response": text,
         "audio_base64": audio_b64,
         "action_taken": action,
+        "research_payload": research_payload,
     }
 
 
@@ -297,7 +308,12 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
     session_id = chat.session_id
     session = get_session(session_id)
 
-    async def respond(text: str, action: str = "none", tainted: bool = False) -> dict:
+    async def respond(
+        text: str,
+        action: str = "none",
+        tainted: bool = False,
+        research_payload: dict | None = None,
+    ) -> dict:
         """Record the exchange in session history, then build the response.
 
         `tainted` marks replies built from externally-sourced content (screen
@@ -305,7 +321,11 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         forced through HitL — see last_reply_tainted.
         """
         record_turn(session_id, user_text, text, tainted=tainted)
-        return await _build_response(text=text, action=action)
+        return await _build_response(
+            text=text,
+            action=action,
+            research_payload=research_payload,
+        )
 
     try:
         # ──────────────────────────────────────────────────────────────────
@@ -654,6 +674,31 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text="Beim Zugriff auf mein Gedächtnis ist etwas schiefgelaufen.",
                                 action="memory_error",
+                            )
+
+                    # ── Finance research (strictly read-only, Phase 7) ─────
+                    elif fc.name in {"research_asset", "compare_assets", "research_history", "analyze_relationship"}:
+                        try:
+                            research_response = research_tools.dispatch(fc.name, dict(fc.args or {}))
+                            return await respond(
+                                text=render_research_response(research_response),
+                                action=f"finance_research:{fc.name}",
+                                # Provider-returned text is retained as data in the
+                                # structured result and never re-enters the prompt.
+                                tainted=False,
+                                research_payload=response_payload(research_response),
+                            )
+                        except (TypeError, ValueError) as e:
+                            log.info("Ungültige Finanzrecherche-Anfrage %s: %s", fc.name, e)
+                            return await respond(
+                                text="Die Finanzrecherche-Anfrage ist unvollständig oder ungültig.",
+                                action="finance_research_invalid",
+                            )
+                        except Exception as e:
+                            log.error("Finanzrecherche %s fehlgeschlagen: %s", fc.name, e)
+                            return await respond(
+                                text="Die Finanzrecherche ist gerade nicht verfügbar.",
+                                action="finance_research_error",
                             )
 
         # ──────────────────────────────────────────────────────────────────

@@ -6,7 +6,7 @@ the frontend (Layer 1) and the FastAPI gateway (Layer 2).
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -65,12 +65,14 @@ class ChatResponse(BaseModel):
         jarvis_response: Jarvis' text answer.
         audio_base64: Base64-encoded MP3 of the TTS rendering (may be empty).
         action_taken: Machine-readable description of what the backend did.
+        research_payload: Canonical Phase-7 output for read-only research actions.
     """
 
     status: Literal["success"] = "success"
     jarvis_response: str
     audio_base64: str = ""
     action_taken: str = "none"
+    research_payload: dict[str, Any] | None = None
 
 
 class RecentMemoriesResponse(BaseModel):
