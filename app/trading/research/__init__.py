@@ -27,6 +27,8 @@ from .openbb_client import (
 )
 from .service import CanonicalResearchService
 from .serialization import canonical_json, to_jsonable
+from .findings import FindingCategory, FindingDirection, FindingEvidence, FindingType, ResearchAnalysis, ResearchFinding
+from .relevance import RelevancePolicy, ResearchRelevanceEngine
 
 __all__ = [
     "OpenBBResearchClient",
@@ -53,4 +55,12 @@ __all__ = [
     "ResearchProviderSettings",
     "ResearchRateLimitError",
     "ResearchUnsupportedEndpointError",
+    "FindingCategory",
+    "FindingDirection",
+    "FindingEvidence",
+    "FindingType",
+    "RelevancePolicy",
+    "ResearchAnalysis",
+    "ResearchFinding",
+    "ResearchRelevanceEngine",
 ]
