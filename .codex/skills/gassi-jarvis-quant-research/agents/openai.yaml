@@ -1,0 +1,4 @@
+interface:
+  display_name: "Gassi Jarvis Quant Research"
+  short_description: "Evidence-backed financial research workflow"
+  default_prompt: "Implement the requested Jarvis research work and update its Obsidian memory."
