@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.trading.research.canonical import AssetIdentity, AssetResearchData, CanonicalAssetType, DataQuality, FreshnessStatus, PriceBar, PriceSeries, QualityStatus, ResearchProvenance
 from app.trading.research.orchestration import AssetResolver, RequestStatus, ResearchAnalysisType, ResearchIntent, ResearchOrchestrator, ResearchPlanner, ResearchRequest, parse_research_question, resolve_timeframe
+from app.trading.research.jarvis_tools import crypto_asset_from_research_question
 
 NOW = datetime(2026, 8, 16, tzinfo=timezone.utc)
 
@@ -42,9 +43,18 @@ def test_resolver_centralizes_defaults_and_surfaces_nasdaq_assumption():
 def test_planner_limits_statistical_request_to_prices_and_normalizes_timeframe():
     request = ResearchRequest(ResearchIntent.STATISTICAL_RELATIONSHIP, ("BTC", "QQQ"), timeframe="2y", analyses=(ResearchAnalysisType.CORRELATION,))
     plan = ResearchPlanner().plan(request)
-    start, end = resolve_timeframe("2y", today=NOW.date())
+    start, end = resolve_timeframe("2y")
     assert plan.sections == ("prices",)
     assert plan.timeframe_start == start and plan.timeframe_end == end
+
+
+def test_asset_report_plan_requests_company_news():
+    plan = ResearchPlanner().plan(ResearchRequest(ResearchIntent.ASSET_ANALYSIS, ("NVDA",)))
+
+    assert plan.sections == (
+        "quote", "prices", "profile", "fundamentals", "valuation",
+        "earnings", "estimates", "filings", "news",
+    )
 
 
 def test_statistical_relationship_uses_deterministic_price_only_service():
@@ -64,6 +74,18 @@ def test_history_routes_to_event_study_and_preserves_insufficient_sample_warning
     assert response.trace[-1].step == "historical_research"
 
 
+def test_crypto_asset_report_requests_only_crypto_supported_sections():
+    provider = FakeCanonicalService()
+
+    response = ResearchOrchestrator(provider).execute(
+        ResearchRequest(ResearchIntent.ASSET_ANALYSIS, ("ETH",))
+    )
+
+    assert response.status is RequestStatus.SUCCESS
+    assert provider.calls[0][1]["asset_type"] == "crypto"
+    assert provider.calls[0][1]["sections"] == ("crypto",)
+
+
 def test_ambiguous_asset_does_not_fetch_provider_data():
     provider = FakeCanonicalService()
     response = ResearchOrchestrator(provider).execute(ResearchRequest(ResearchIntent.ASSET_ANALYSIS, ("some company perhaps",)))
@@ -76,3 +98,9 @@ def test_deterministic_parser_produces_bounded_beta_request():
     assert request.intent is ResearchIntent.STATISTICAL_RELATIONSHIP
     assert request.analyses == (ResearchAnalysisType.BETA,)
     assert request.timeframe == "2y"
+
+
+def test_crypto_performance_router_is_narrow_and_deterministic():
+    assert crypto_asset_from_research_question("how is ETH the coin performing") == "ETH"
+    assert crypto_asset_from_research_question("Bitcoin price research") == "BTC"
+    assert crypto_asset_from_research_question("Tell me a joke about ETH") is None

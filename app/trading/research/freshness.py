@@ -14,11 +14,16 @@ class FreshnessPolicy:
     category_ttls: Mapping[str, timedelta] = field(default_factory=lambda: {
         "price_history": timedelta(days=1),
         "price_history_intraday": timedelta(minutes=15),
+        "equity_quote": timedelta(minutes=15),
         "company_profile": timedelta(days=7),
         "income_statement": timedelta(days=120),
         "balance_statement": timedelta(days=120),
         "cash_flow_statement": timedelta(days=120),
         "earnings_calendar": timedelta(days=1),
+        "company_news": timedelta(days=1),
+        "company_filings": timedelta(days=1),
+        "estimates_consensus": timedelta(days=1),
+        "fundamental_metrics": timedelta(days=1),
         "macro_series": timedelta(days=35),
     })
 
