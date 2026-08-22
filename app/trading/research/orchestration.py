@@ -221,13 +221,13 @@ class ResearchPlanner:
     """Approved request-to-service plans. No plan can be supplied by an LLM."""
 
     _SECTIONS = {
-        ResearchIntent.ASSET_ANALYSIS: ("prices", "profile", "fundamentals", "valuation", "earnings", "estimates"),
-        ResearchIntent.ASSET_COMPARISON: ("prices", "profile", "fundamentals", "valuation", "earnings", "estimates"),
+        ResearchIntent.ASSET_ANALYSIS: ("quote", "prices", "profile", "fundamentals", "valuation", "earnings", "estimates", "filings", "news"),
+        ResearchIntent.ASSET_COMPARISON: ("quote", "prices", "profile", "fundamentals", "valuation", "earnings", "estimates", "filings", "news"),
         ResearchIntent.HISTORICAL_ANALYSIS: ("prices",),
         ResearchIntent.STATISTICAL_RELATIONSHIP: ("prices",),
         ResearchIntent.RISK_ANALYSIS: ("prices", "fundamentals"),
         ResearchIntent.VALUATION_ANALYSIS: ("profile", "valuation"),
-        ResearchIntent.FACTOR_EXPLANATION: ("prices", "profile", "fundamentals", "valuation", "earnings"),
+        ResearchIntent.FACTOR_EXPLANATION: ("quote", "prices", "profile", "fundamentals", "valuation", "earnings", "estimates", "filings", "news"),
     }
 
     _STEPS = {
@@ -309,7 +309,8 @@ class ResearchOrchestrator:
             data = tuple(self._fetch(item.asset, plan) for item in resolutions if item.asset)
             traces.append(ExecutionTrace("canonical_data", RequestStatus.SUCCESS))
         except Exception as exc:
-            return self.validator.validate(ResearchResponse(request, RequestStatus.FAILED, resolutions, plan, warnings=tuple(warnings + [f"Canonical research data could not be retrieved: {exc}"]), trace=tuple(traces + [ExecutionTrace("canonical_data", RequestStatus.FAILED, type(exc).__name__)])))
+            message = getattr(exc, "public_message", "Canonical research data could not be retrieved.")
+            return self.validator.validate(ResearchResponse(request, RequestStatus.FAILED, resolutions, plan, warnings=tuple(warnings + [message]), trace=tuple(traces + [ExecutionTrace("canonical_data", RequestStatus.FAILED, type(exc).__name__)])))
 
         try:
             if request.intent is ResearchIntent.HISTORICAL_ANALYSIS:
@@ -325,11 +326,23 @@ class ResearchOrchestrator:
                 response = ResearchResponse(request, RequestStatus.PARTIAL if any(report.data_quality.status.value != "complete" for report in reports) else RequestStatus.SUCCESS, resolutions, plan, reports=reports, comparison=comparison, warnings=tuple(warnings + report_warnings + (list(comparison.warnings) if comparison else [])), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("relevance_and_report", RequestStatus.SUCCESS)]))
             return self.validator.validate(response)
         except Exception as exc:
-            return self.validator.validate(ResearchResponse(request, RequestStatus.PARTIAL, resolutions, plan, warnings=tuple(warnings + [f"Research execution partially failed: {exc}"]), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("research_execution", RequestStatus.PARTIAL, type(exc).__name__)])))
+            message = getattr(exc, "public_message", "Part of the research report could not be produced.")
+            return self.validator.validate(ResearchResponse(request, RequestStatus.PARTIAL, resolutions, plan, warnings=tuple(warnings + [message]), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("research_execution", RequestStatus.PARTIAL, type(exc).__name__)])))
 
     def _fetch(self, asset: AssetIdentity, plan: ResearchPlan) -> AssetResearchData:
         provider_type = "crypto" if asset.asset_type is CanonicalAssetType.CRYPTO else "equity"
-        return self.canonical_service.get_asset_research_data(asset.symbol, asset_type=provider_type, sections=plan.sections, start_date=plan.timeframe_start, end_date=plan.timeframe_end)
+        sections = plan.sections
+        # Asset reports and comparisons must not request equity-only sections
+        # for canonical crypto assets. Historical/statistical workflows keep
+        # their price-series request because those engines consume prices
+        # directly; report workflows use the crypto wrapper so provenance and
+        # crypto-specific coverage remain explicit.
+        if asset.asset_type is CanonicalAssetType.CRYPTO and plan.intent not in {
+            ResearchIntent.HISTORICAL_ANALYSIS,
+            ResearchIntent.STATISTICAL_RELATIONSHIP,
+        }:
+            sections = ("crypto",)
+        return self.canonical_service.get_asset_research_data(asset.symbol, asset_type=provider_type, sections=sections, start_date=plan.timeframe_start, end_date=plan.timeframe_end)
 
     def _report(self, data: AssetResearchData, depth: ReportDepth) -> AssetResearchReport:
         return self.reports.build_asset_report(research_data=data, analysis=self.relevance.analyze(data), depth=depth)
@@ -357,8 +370,8 @@ class ResearchOrchestrator:
     def _sources(data: Iterable[AssetResearchData]) -> tuple[ResearchProvenance, ...]:
         sources = []
         for item in data:
-            for section in (item.prices, item.profile, item.fundamentals, item.valuation, item.earnings, item.crypto):
-                if section is not None:
+            for section in (item.quote, item.prices, item.profile, item.fundamentals, item.valuation, item.earnings, item.estimates, item.filings, item.news, item.crypto):
+                if section is not None and section.provenance is not None:
                     sources.append(section.provenance)
         return tuple(sources)
 

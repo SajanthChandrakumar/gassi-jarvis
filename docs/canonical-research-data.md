@@ -25,6 +25,8 @@ selective aggregation. Gemini is not part of this path.
   stable provider identifiers when supplied.
 - `PriceSeries` and `PriceBar`: ordered UTC OHLCV observations with optional
   VWAP and explicit interval/currency.
+- `EquityQuote`: last price, previous close, session OHLC/volume, 52-week range,
+  moving averages, currency, quality, and provenance without client-side math.
 - `FundamentalsData` and `FinancialStatement`: income, balance-sheet, and
   cash-flow observations with canonical high-value concepts such as revenue,
   operating income, net income, free cash flow, total assets, debt, cash, and
@@ -32,9 +34,15 @@ selective aggregation. Gemini is not part of this path.
   observation as `native_fields`.
 - `ValuationData`: optional market-cap, enterprise-value, P/E, forward P/E,
   price-to-sales, price-to-book, EV/EBITDA, and free-cash-flow-yield values.
-- `EarningsData` and `EstimatesData`: distinct actual/estimate fields. Estimates
-  are explicitly `not_supported` until Phase 1 exposes a provider-neutral
-  source; they are never represented as zero.
+- `EarningsData` and `EstimatesData`: distinct actual/estimate fields.
+  `EstimatesData` retains only numeric observations supplied by the consensus
+  endpoint (target high/low/consensus/median and analyst count when present).
+  Provider recommendation labels are deliberately excluded.
+- `CompanyNews` and `NewsArticle`: ordered headline records with source,
+  publication time, optional URL/excerpt, and section-level provenance. The
+  canonical layer does not interpret headline sentiment.
+- `CompanyFilings` and `CompanyFiling`: at most five recent 10-K, 10-Q, or 8-K
+  records with official evidence links and SEC provenance.
 - `MacroSeries`: dated, unit/frequency-aware macro observations.
 - `CryptoMarketData`: a crypto-specific wrapper around price history plus
   optional supply/market-cap fields, without inventing unsupported derivatives
@@ -45,7 +53,8 @@ selective aggregation. Gemini is not part of this path.
 ## Provenance, as-of, and missing values
 
 Each canonical section carries `ResearchProvenance` with provider, source
-category, UTC `retrieved_at`, and relevant request parameters. `retrieved_at`
+category, UTC `retrieved_at`, relevant request parameters, and ordered
+`ProviderAttempt` outcomes. `retrieved_at`
 means when Jarvis fetched the response. `as_of` means the latest date/time that
 the observation itself represents; the two fields must not be substituted.
 
@@ -61,8 +70,9 @@ error. Empty data, provider failure, and omitted sections remain distinct.
 configurable `FreshnessPolicy`.
 
 The default policy is deliberately centralized, not hidden in normalizers:
-intraday prices 15 minutes, daily prices 1 day, profile 7 days, statements 120
-days, earnings calendars 1 day, and macro series 35 days. Callers can supply a
+quotes and intraday prices 15 minutes, daily prices and filings 1 day, profile 7
+days, statements 120 days, earnings calendars, metrics, and company news 1 day,
+and macro series 35 days. Callers can supply a
 different policy for their use case. These freshness rules are operational
 metadata, not a claim that data is financially authoritative.
 
@@ -81,8 +91,8 @@ quality fields. `refresh=True` bypasses the cache and replaces the entry.
 ## Aggregate behaviour
 
 `CanonicalResearchService.get_asset_research_data` takes only the requested
-sections (`prices`, `profile`, `fundamentals`, `valuation`, `earnings`,
-`estimates`, and `crypto`). It does not fetch every possible dataset. A failure
+sections (`quote`, `prices`, `profile`, `fundamentals`, `valuation`, `earnings`,
+`estimates`, `filings`, `news`, and `crypto`). It does not fetch every possible dataset. A failure
 in one optional section creates a `SectionFailure` while independent successful
 sections remain available. `get_macro_series` returns a standalone canonical
 macro series because macro context is not an equity-shaped asset section.

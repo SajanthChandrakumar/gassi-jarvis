@@ -17,6 +17,7 @@ from .reports import (
     ReportDepth,
     ReportFactor,
     ReportMetric,
+    ReportPricePoint,
     ReportRisk,
     ReportSection,
     ReportSource,
@@ -85,8 +86,19 @@ class AssetResearchReportService:
             as_of=self._as_of(research_data, analysis.findings),
             # This is the latest retained input retrieval time, not a wall-clock build time.
             generated_at=max((source.retrieved_at for source in sources), default=None),
+            price_history=self._price_history(research_data),
+            earnings=research_data.earnings.observations if research_data.earnings is not None else (),
+            news=research_data.news.articles if research_data.news is not None else (),
+            filings=research_data.filings.items if research_data.filings is not None else (),
             warnings=warnings,
         )
+
+    @staticmethod
+    def _price_history(data: AssetResearchData) -> tuple[ReportPricePoint, ...]:
+        series = data.prices or (data.crypto.price_history if data.crypto is not None else None)
+        if series is None:
+            return ()
+        return tuple(ReportPricePoint(bar.timestamp, bar.close) for bar in series.bars if bar.close is not None)[-180:]
 
     def _select_key_findings(self, analysis: ResearchAnalysis, limit: int) -> tuple[ResearchFinding, ...]:
         """Use Phase-3 order and the same category-cap diversity rule, without rescoring."""
@@ -146,7 +158,7 @@ class AssetResearchReportService:
 
     def _sections(self, data, selected, risks, coverage, sources) -> tuple[ReportSection, ...]:
         finding_sections = self._finding_sections(data, selected)
-        common = [self._overview(data, selected)]
+        common = [self._snapshot(data, selected)]
         if selected:
             common.append(self._section("key_findings", "Key Findings", selected))
         asset_type = data.asset.asset_type
@@ -155,7 +167,7 @@ class AssetResearchReportService:
         elif asset_type is CanonicalAssetType.ETF:
             order = ("price_trend", "market_behavior", "fund_market_characteristics")
         else:
-            order = ("growth", "profitability", "cash_flow", "balance_sheet", "valuation", "earnings", "market_behavior")
+            order = ("fundamentals", "growth", "profitability", "cash_flow", "balance_sheet", "valuation", "earnings", "estimates", "market_behavior")
         common.extend(finding_sections[key] for key in order if key in finding_sections)
         if risks:
             risk_findings = tuple(item for item in selected if item.id in {risk.finding_id for risk in risks})
@@ -164,7 +176,7 @@ class AssetResearchReportService:
         if data_warnings or any(item.availability is not Availability.AVAILABLE for item in coverage):
             common.append(ReportSection("data_quality", "Data Quality", warnings=data_warnings))
         if sources:
-            common.append(ReportSection("sources", "Sources", provenance=tuple(ResearchProvenance(source.provider, source.source_category, source.retrieved_at) for source in sources)))
+            common.append(ReportSection("sources", "Sources", provenance=tuple(ResearchProvenance(source.provider, source.source_category, source.retrieved_at, attempts=source.attempts) for source in sources)))
         return tuple(common)
 
     def _finding_sections(self, data: AssetResearchData, selected: Sequence[ResearchFinding]) -> dict[str, ReportSection]:
@@ -187,11 +199,30 @@ class AssetResearchReportService:
         for category, (key, title) in keys.items():
             if grouped[key]:
                 sections[key] = self._section(key, title, tuple(grouped[key]))
+        if data.fundamentals is not None:
+            latest: dict[str, Decimal] = {}
+            for statement in sorted(data.fundamentals.statements, key=lambda item: item.period_end or datetime.min.replace(tzinfo=data.fundamentals.provenance.retrieved_at.tzinfo)):
+                for key, value in statement.values:
+                    if value is not None:
+                        latest[key] = value
+            if latest:
+                sections["fundamentals"] = ReportSection(
+                    "fundamentals", "Fundamentals",
+                    metrics=tuple(ReportMetric(key, value) for key, value in latest.items()),
+                    provenance=(data.fundamentals.provenance,),
+                    warnings=data.fundamentals.quality.warnings,
+                )
         if data.valuation is not None and any(value is not None for _, value in data.valuation.metrics):
             sections["valuation"] = ReportSection(
                 "valuation", "Valuation",
                 metrics=tuple(ReportMetric(key, value) for key, value in data.valuation.metrics if value is not None),
                 provenance=(data.valuation.provenance,), warnings=data.valuation.quality.warnings,
+            )
+        if data.estimates is not None and data.estimates.provenance is not None and any(value is not None for _, value in data.estimates.metrics):
+            sections["estimates"] = ReportSection(
+                "estimates", "Analyst Consensus",
+                metrics=tuple(ReportMetric(key, value) for key, value in data.estimates.metrics if value is not None),
+                provenance=(data.estimates.provenance,), warnings=data.estimates.quality.warnings,
             )
         if data.crypto is not None and any(value is not None for value in (data.crypto.market_cap, data.crypto.circulating_supply, data.crypto.total_supply)):
             sections["market_structure"] = ReportSection(
@@ -211,40 +242,58 @@ class AssetResearchReportService:
         metrics = tuple(ReportMetric(finding.evidence.metric, finding.evidence.current_value, finding.evidence.previous_value, finding.evidence.comparison_period, finding.id) for finding in findings)
         return ReportSection(key, title, tuple(findings), metrics, warnings, provenance)
 
-    def _overview(self, data: AssetResearchData, selected: Sequence[ResearchFinding]) -> ReportSection:
+    def _snapshot(self, data: AssetResearchData, selected: Sequence[ResearchFinding]) -> ReportSection:
         metrics: list[ReportMetric] = []
         provenance: list[ResearchProvenance] = []
-        if data.prices is not None and data.prices.bars and data.prices.bars[-1].close is not None:
-            metrics.append(ReportMetric("last_close", data.prices.bars[-1].close, unit=data.prices.currency))
+        if data.quote is not None:
+            for key, value in (
+                ("last_price", data.quote.last_price),
+                ("previous_close", data.quote.previous_close),
+                ("year_high", data.quote.year_high),
+                ("year_low", data.quote.year_low),
+            ):
+                if value is not None:
+                    metrics.append(ReportMetric(key, value, unit=data.quote.currency))
+            provenance.append(data.quote.provenance)
+        elif data.prices is not None and data.prices.bars and data.prices.bars[-1].close is not None:
+            metrics.append(ReportMetric("last_price", data.prices.bars[-1].close, unit=data.prices.currency))
             provenance.append(data.prices.provenance)
         elif data.crypto is not None and data.crypto.price_history.bars and data.crypto.price_history.bars[-1].close is not None:
-            metrics.append(ReportMetric("last_close", data.crypto.price_history.bars[-1].close, unit=data.crypto.price_history.currency))
+            metrics.append(ReportMetric("last_price", data.crypto.price_history.bars[-1].close, unit=data.crypto.price_history.currency))
             provenance.append(data.crypto.provenance)
-        return ReportSection("overview", "Overview", tuple(selected[:1]), tuple(metrics), provenance=tuple(provenance))
+        return ReportSection("snapshot", "Snapshot", tuple(selected[:1]), tuple(metrics), provenance=tuple(provenance))
 
     def _coverage(self, data: AssetResearchData) -> tuple[ReportDataCoverage, ...]:
         sections = [
-            ("prices", data.prices), ("profile", data.profile), ("fundamentals", data.fundamentals),
+            ("quote", data.quote), ("prices", data.prices), ("profile", data.profile), ("fundamentals", data.fundamentals),
             ("valuation", data.valuation), ("earnings", data.earnings), ("estimates", data.estimates), ("crypto_market", data.crypto),
+            ("filings", data.filings), ("news", data.news),
         ]
         failures = defaultdict(list)
         for failure in data.failures:
-            failures[failure.section.split(".")[0]].append(failure.message)
+            failures[failure.section.split(".")[0]].append(failure)
         coverage: list[ReportDataCoverage] = []
         for name, section in sections:
             if section is None:
                 availability = Availability.UPSTREAM_ERROR if name in failures else Availability.NOT_REQUESTED
-                coverage.append(ReportDataCoverage(name, availability, FreshnessStatus.UNKNOWN, tuple(failures[name])))
+                coverage.append(ReportDataCoverage(
+                    name, availability, FreshnessStatus.UNKNOWN,
+                    tuple(item.message for item in failures[name]), failures=tuple(failures[name]),
+                ))
                 continue
             availability = getattr(section, "availability", section.quality.availability)
-            warnings = list(section.quality.warnings) + failures[name]
+            warnings = list(section.quality.warnings) + [item.message for item in failures[name]]
             if section.freshness is FreshnessStatus.STALE:
                 warnings.append(f"{name} data is stale.")
             elif section.quality.status is QualityStatus.PARTIAL:
                 warnings.append(f"{name} data is partial.")
             elif section.quality.status is QualityStatus.EMPTY:
                 warnings.append(f"{name} data is empty.")
-            coverage.append(ReportDataCoverage(name, availability, section.freshness, tuple(warnings)))
+            coverage.append(ReportDataCoverage(
+                name, availability, section.freshness, tuple(warnings),
+                missing_fields=section.quality.missing_fields,
+                failures=tuple(failures[name]),
+            ))
         if data.asset.asset_type is CanonicalAssetType.CRYPTO:
             coverage.append(ReportDataCoverage("derivatives_metadata", Availability.NOT_SUPPORTED, FreshnessStatus.UNKNOWN, ("Phase 2 does not provide derivatives metadata.",)))
         return tuple(coverage)
@@ -252,12 +301,12 @@ class AssetResearchReportService:
     @staticmethod
     def _sources(data: AssetResearchData, findings: Iterable[ResearchFinding]) -> tuple[ReportSource, ...]:
         provenance: list[ResearchProvenance] = []
-        for section in (data.prices, data.profile, data.fundamentals, data.valuation, data.earnings, data.crypto):
-            if section is not None:
+        for section in (data.quote, data.prices, data.profile, data.fundamentals, data.valuation, data.earnings, data.estimates, data.filings, data.news, data.crypto):
+            if section is not None and section.provenance is not None:
                 provenance.append(section.provenance)
         provenance.extend(item for finding in findings for item in finding.provenance)
         unique = {(item.provider, item.source_category, item.retrieved_at): item for item in provenance}
-        return tuple(ReportSource(provider, category, retrieved_at) for provider, category, retrieved_at in sorted(unique))
+        return tuple(ReportSource(provider, category, retrieved_at, unique[(provider, category, retrieved_at)].attempts) for provider, category, retrieved_at in sorted(unique))
 
     @staticmethod
     def _warnings(data, analysis, coverage) -> tuple[str, ...]:
@@ -288,6 +337,8 @@ class AssetResearchReportService:
 
     @staticmethod
     def _as_of(data: AssetResearchData, findings: Iterable[ResearchFinding]) -> datetime | None:
-        values = [getattr(section, "as_of", None) for section in (data.prices, data.profile, data.fundamentals, data.valuation, data.earnings, data.crypto) if section is not None]
+        # Earnings ``as_of`` may be a future scheduled report date, not an
+        # observation timestamp, so it must not advance the report clock.
+        values = [getattr(section, "as_of", None) for section in (data.quote, data.prices, data.profile, data.fundamentals, data.valuation, data.estimates, data.filings, data.news, data.crypto) if section is not None]
         values.extend(finding.as_of for finding in findings)
         return max((item for item in values if item is not None), default=None)

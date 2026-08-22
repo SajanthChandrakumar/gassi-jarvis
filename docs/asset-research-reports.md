@@ -20,7 +20,9 @@ make recommendations.
 
 The report contains a deterministic summary, ordered sections, selected key
 findings, positive/negative/mixed factors, evidence-backed risks, explicit
-data coverage, compact sources, `as_of`, and warnings. `ReportSection` keeps
+data coverage, compact sources with provider attempts, a bounded presentation
+price history, company-news records, recent filings, `as_of`, and warnings.
+`ReportSection` keeps
 the original `ResearchFinding` objects, compact raw `ReportMetric` values, and
 section provenance. Findings retain their source IDs, metric values,
 comparisons, freshness, quality, confidence, and provider provenance.
@@ -53,12 +55,13 @@ Sections also use stable asset-template ordering.
 
 Only meaningful sections appear; raw payloads are not dumped.
 
-- Equity: Overview, Key Findings, Growth, Profitability/Margins, Cash Flow,
-  Balance Sheet, Valuation, Earnings/Estimates, Price/Market Behavior, Risks,
-  Data Quality, Sources.
-- Crypto: Overview, Key Findings, Price/Trend, Volume, Market Structure (only
+- Equity: Snapshot, Key Findings, Fundamentals, Growth, Profitability/Margins,
+  Cash Flow, Balance Sheet, Valuation, Earnings/Analyst Consensus,
+  Price/Market Behavior, Risks, Data Quality, Sources. Company news and filings
+  are attached as sourced evidence, not interpreted report factors.
+- Crypto: Snapshot, Key Findings, Price/Trend, Volume, Market Structure (only
   if canonical market-cap/supply fields exist), Risks, Data Quality, Sources.
-- ETF: Overview, Key Findings, Price/Trend, Market Behavior, Fund/Market
+- ETF: Snapshot, Key Findings, Price/Trend, Market Behavior, Fund/Market
   Characteristics when canonical valuation metrics exist, Risks, Data Quality,
   Sources. Holdings and factor decomposition are not available in Phase 2 and
   are not represented.
@@ -72,7 +75,8 @@ composition layer exists.
 `ReportDataCoverage` distinguishes `available`, `missing`, `not_requested`,
 `not_supported`, and `upstream_error`, using Phase-2 `Availability` directly.
 Missing remains distinct from `0`; an absent section is marked not requested,
-whereas a recorded fetch failure is upstream error. Stale, partial, and empty
+whereas a recorded fetch failure is upstream error. Stable failure codes and
+canonical missing-field names are retained alongside safe messages. Stale, partial, and empty
 retrieved sections add explicit caveats. Crypto derivatives metadata is marked
 not supported in coverage, but no fake report section or metric is created.
 

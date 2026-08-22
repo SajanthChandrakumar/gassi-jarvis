@@ -9,9 +9,11 @@
  *     falls back to the cached shell only when offline.
  *   - /static/* assets: cache-first for speed.
  */
-const CACHE = 'jarvis-shell-v1';
+const CACHE = 'jarvis-command-center-v7';
 const SHELL = [
     '/',
+    '/static/styles.css',
+    '/static/app.js',
     '/static/manifest.json',
     '/static/icon-192.png',
     '/static/icon-512.png',

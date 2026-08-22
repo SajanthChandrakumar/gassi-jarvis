@@ -24,6 +24,16 @@ import re
 import secrets
 import subprocess
 
+# aiohttp/OpenBB can create its shared TLS context while importing other
+# integrations. Configure the virtual environment CA bundle before those
+# imports so macOS framework Python validates provider certificates correctly.
+try:
+    import certifi
+except ImportError:  # pragma: no cover - requirements pin certifi in production
+    certifi = None
+if certifi is not None:
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+
 import edge_tts
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -34,7 +44,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
-from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse
+from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse, ResearchRunRequest
 from app.memory import (
     get_session,
     clear_pending_command,
@@ -58,9 +68,12 @@ from app.security import evaluate_security_level, execute_shell_command
 from app.vision import capture_and_compress_screen
 from app.trading.research.jarvis_tools import (
     JarvisResearchTools,
+    crypto_asset_from_research_question,
+    macro_context_payload,
     render_research_response,
     response_payload,
 )
+from app.trading.research.provider_status import provider_status_payload
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -291,6 +304,41 @@ async def recent_memories(request: Request) -> RecentMemoriesResponse:
     return RecentMemoriesResponse(memories=get_recent_memories(n=5))
 
 
+@app.get("/api/research/providers", dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def research_provider_status(request: Request) -> dict[str, list[dict[str, object]]]:
+    """Expose non-secret OpenBB provider readiness for the local research UI."""
+    return provider_status_payload()
+
+
+@app.get("/api/research/macro", dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def research_macro_context(request: Request) -> dict[str, list[dict]]:
+    """Return a compact canonical macro context without invoking Gemini."""
+    return macro_context_payload(research_tools.orchestrator.canonical_service)
+
+
+@app.post("/api/research/run", response_model=ChatResponse, dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def run_research_workflow(request: Request, research: ResearchRunRequest) -> dict:
+    """Run a validated read-only research workflow without relying on LLM routing."""
+    if research.mode == "asset":
+        name, arguments = "research_asset", {"asset": research.asset, "timeframe": research.timeframe}
+    elif research.mode == "compare":
+        name, arguments = "compare_assets", {"left_asset": research.asset, "right_asset": research.benchmark, "timeframe": research.timeframe}
+    elif research.mode == "history":
+        name, arguments = "research_history", {"asset": research.asset, "timeframe": research.timeframe}
+    else:
+        name, arguments = "analyze_relationship", {"asset": research.asset, "benchmark": research.benchmark, "timeframe": research.timeframe, "analysis": research.analysis}
+    response = research_tools.dispatch(name, arguments)
+    return await _build_response(
+        render_research_response(response),
+        action=f"finance_research:{name}",
+        research_payload=response_payload(response),
+        generate_audio=False,
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
 async def chat_with_jarvis(request: Request, chat: ChatRequest):
@@ -402,6 +450,26 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 2: LLM Call — Send to Gemini
         # ──────────────────────────────────────────────────────────────────
+        # Explicit BTC/ETH performance requests are a bounded read-only
+        # research workflow. Route them deterministically so the chat model
+        # cannot incorrectly claim that crypto research is unavailable.
+        crypto_asset = crypto_asset_from_research_question(user_text)
+        if crypto_asset:
+            try:
+                research_response = research_tools.research_asset(asset=crypto_asset)
+                return await respond(
+                    text=render_research_response(research_response),
+                    action="finance_research:research_asset",
+                    tainted=False,
+                    research_payload=response_payload(research_response),
+                )
+            except Exception as e:
+                log.error("Krypto-Finanzrecherche %s fehlgeschlagen: %s", crypto_asset, e)
+                return await respond(
+                    text="Die Krypto-Finanzrecherche ist gerade nicht verfügbar.",
+                    action="finance_research_error",
+                )
+
         log.debug("User-Input an Gemini: %r", user_text)
 
         try:

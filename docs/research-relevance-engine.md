@@ -56,11 +56,11 @@ not a recommendation.
 - Data quality: explicit stale-data and data-gap findings for retrieved
   sections or upstream section failures.
 
-The current Phase-2 contract has only a point-in-time valuation snapshot and
-an explicitly unsupported provider-neutral estimates endpoint. Consequently,
-the engine intentionally emits no invented valuation-history, valuation
-extreme, estimates, or price/estimates divergence finding. Those evaluators
-can be added only once comparable canonical historical data is available.
+The current Phase-2 contract has only point-in-time valuation and analyst
+consensus snapshots. Consequently, the engine intentionally emits no invented
+valuation-history, valuation extreme, estimate-revision trend, or
+price/estimates divergence finding. Those evaluators can be added only once
+comparable canonical historical data is available.
 
 ## Rules, materiality, and confidence
 

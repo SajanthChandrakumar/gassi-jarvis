@@ -7,7 +7,19 @@ from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
 
-from .canonical import AssetIdentity, Availability, DataQuality, FreshnessStatus, ResearchProvenance, _utc
+from .canonical import (
+    AssetIdentity,
+    Availability,
+    CompanyFiling,
+    DataQuality,
+    EarningsObservation,
+    FreshnessStatus,
+    NewsArticle,
+    ProviderAttempt,
+    ResearchProvenance,
+    SectionFailure,
+    _utc,
+)
 from .findings import ResearchFinding
 
 
@@ -85,9 +97,13 @@ class ReportDataCoverage:
     availability: Availability
     freshness: FreshnessStatus
     warnings: tuple[str, ...] = ()
+    missing_fields: tuple[str, ...] = ()
+    failures: tuple[SectionFailure, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(sorted(set(self.warnings))))
+        object.__setattr__(self, "missing_fields", tuple(sorted(set(self.missing_fields))))
+        object.__setattr__(self, "failures", tuple(self.failures))
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,9 +111,20 @@ class ReportSource:
     provider: str | None
     source_category: str
     retrieved_at: datetime
+    attempts: tuple[ProviderAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "retrieved_at", _utc(self.retrieved_at, "retrieved_at"))
+        object.__setattr__(self, "attempts", tuple(self.attempts))
+
+
+@dataclass(frozen=True, slots=True)
+class ReportPricePoint:
+    timestamp: datetime
+    close: Decimal
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "timestamp", _utc(self.timestamp, "timestamp"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +154,10 @@ class AssetResearchReport:
     sources: tuple[ReportSource, ...]
     as_of: datetime | None
     generated_at: datetime | None
+    price_history: tuple[ReportPricePoint, ...] = ()
+    earnings: tuple[EarningsObservation, ...] = ()
+    news: tuple[NewsArticle, ...] = ()
+    filings: tuple[CompanyFiling, ...] = ()
     warnings: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -138,6 +169,10 @@ class AssetResearchReport:
         object.__setattr__(self, "risks", tuple(self.risks))
         object.__setattr__(self, "data_coverage", tuple(self.data_coverage))
         object.__setattr__(self, "sources", tuple(self.sources))
+        object.__setattr__(self, "price_history", tuple(self.price_history))
+        object.__setattr__(self, "earnings", tuple(self.earnings))
+        object.__setattr__(self, "news", tuple(self.news))
+        object.__setattr__(self, "filings", tuple(self.filings))
         if self.as_of is not None:
             object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
         if self.generated_at is not None:
