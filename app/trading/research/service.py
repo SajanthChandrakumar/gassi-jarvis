@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 
 from .cache import InMemoryResearchCache, ResearchCacheKey
@@ -13,26 +13,30 @@ from .canonical import (
     Availability,
     CanonicalAssetType,
     DataQuality,
-    EstimatesData,
-    FreshnessStatus,
     QualityStatus,
     SectionFailure,
 )
 from .freshness import FreshnessPolicy
 from .normalizers import (
     identity_from_profile,
+    filter_company_news,
     normalize_crypto,
     normalize_earnings,
+    normalize_equity_quote,
     normalize_fundamentals,
+    normalize_filings,
+    normalize_company_news,
+    normalize_estimates,
     normalize_macro,
     normalize_price_data,
     normalize_profile,
+    normalize_valuation_metrics,
 )
 from .openbb_client import OpenBBResearchClient, ResearchData, ResearchError
 
 
-AssetSection = Literal["prices", "profile", "fundamentals", "valuation", "earnings", "estimates", "crypto"]
-_VALID_SECTIONS = frozenset({"prices", "profile", "fundamentals", "valuation", "earnings", "estimates", "crypto"})
+AssetSection = Literal["quote", "prices", "profile", "fundamentals", "valuation", "earnings", "filings", "news", "estimates", "crypto"]
+_VALID_SECTIONS = frozenset({"quote", "prices", "profile", "fundamentals", "valuation", "earnings", "filings", "news", "estimates", "crypto"})
 
 
 class CanonicalResearchService:
@@ -67,16 +71,16 @@ class CanonicalResearchService:
         unknown = set(selected).difference(_VALID_SECTIONS)
         if unknown:
             raise ValueError(f"Unknown research sections: {', '.join(sorted(unknown))}")
-        if asset_type == "crypto" and any(section in {"fundamentals", "valuation", "earnings", "estimates", "profile"} for section in selected):
+        if asset_type == "crypto" and any(section in {"quote", "fundamentals", "valuation", "earnings", "filings", "news", "estimates", "profile"} for section in selected):
             raise ValueError("Equity-only sections cannot be requested for crypto assets")
 
         fallback_type = CanonicalAssetType.CRYPTO if asset_type == "crypto" else CanonicalAssetType.EQUITY
         asset = AssetIdentity(symbol=symbol, asset_type=fallback_type)
         failures: list[SectionFailure] = []
-        prices = profile = fundamentals = valuation = earnings = estimates = crypto = None
+        quote = prices = profile = fundamentals = valuation = earnings = filings = news = estimates = crypto = None
 
         profile_raw: ResearchData | None = None
-        if asset_type == "equity" and any(section in selected for section in ("profile", "valuation", "fundamentals")):
+        if asset_type == "equity" and any(section in selected for section in ("profile", "fundamentals", "filings", "news")):
             try:
                 profile_raw = self._fetch(
                     symbol, "company_profile", provider, (),
@@ -84,13 +88,34 @@ class CanonicalResearchService:
                     refresh=refresh, allow_stale=allow_stale,
                 )
                 asset = identity_from_profile(profile_raw, fallback_type=fallback_type)
-                normalized_profile, normalized_valuation = normalize_profile(profile_raw, asset, policy=self._freshness_policy, now=now)
+                normalized_profile = normalize_profile(profile_raw, asset, policy=self._freshness_policy, now=now)
                 if "profile" in selected:
                     profile = normalized_profile
-                if "valuation" in selected:
-                    valuation = normalized_valuation
             except (ResearchError, ValueError) as exc:
-                failures.append(self._failure("profile", exc))
+                if "profile" in selected or "fundamentals" in selected:
+                    failures.append(self._failure("profile", exc))
+
+        if "quote" in selected:
+            try:
+                raw = self._fetch(
+                    symbol, "equity_quote", provider, (),
+                    lambda: self._client.get_equity_quote(symbol, provider=provider),
+                    refresh=refresh, allow_stale=allow_stale,
+                )
+                quote = normalize_equity_quote(raw, asset, policy=self._freshness_policy, now=now)
+            except (ResearchError, ValueError) as exc:
+                failures.append(self._failure("quote", exc))
+
+        if "valuation" in selected:
+            try:
+                raw = self._fetch(
+                    symbol, "fundamental_metrics", provider, (),
+                    lambda: self._client.get_fundamental_metrics(symbol, provider=provider),
+                    refresh=refresh, allow_stale=allow_stale,
+                )
+                valuation = normalize_valuation_metrics(raw, asset, policy=self._freshness_policy, now=now)
+            except (ResearchError, ValueError) as exc:
+                failures.append(self._failure("valuation", exc))
 
         if "prices" in selected or "crypto" in selected:
             try:
@@ -127,33 +152,69 @@ class CanonicalResearchService:
 
         if "earnings" in selected:
             try:
+                anchor = (now or datetime.now(timezone.utc)).date()
+                earnings_start = anchor - timedelta(days=14)
+                earnings_end = anchor + timedelta(days=30)
                 raw = self._fetch(
                     symbol, "earnings_calendar", provider,
-                    (("start_date", str(start_date or "")), ("end_date", str(end_date or ""))),
-                    lambda: self._client.get_earnings_calendar(start_date=start_date, end_date=end_date, provider=provider),
+                    (("start_date", earnings_start.isoformat()), ("end_date", earnings_end.isoformat())),
+                    lambda: self._client.get_earnings_calendar(
+                        symbol,
+                        start_date=earnings_start,
+                        end_date=earnings_end,
+                        provider=provider,
+                    ),
                     refresh=refresh, allow_stale=allow_stale,
                 )
                 earnings = normalize_earnings(raw, asset, policy=self._freshness_policy, now=now)
             except (ResearchError, ValueError) as exc:
                 failures.append(self._failure("earnings", exc))
 
-        if "estimates" in selected:
-            estimates = EstimatesData(
-                asset=asset,
-                availability=Availability.NOT_SUPPORTED,
-                provenance=None,
-                freshness=FreshnessStatus.UNKNOWN,
-                quality=DataQuality(QualityStatus.PARTIAL, Availability.NOT_SUPPORTED, warnings=("Phase 1 does not expose a provider-neutral estimates endpoint.",)),
-            )
+        if "news" in selected:
+            try:
+                raw = self._fetch(
+                    symbol, "company_news", provider,
+                    (("start_date", str(start_date or "")), ("end_date", str(end_date or "")), ("limit", "8")),
+                    lambda: self._client.get_company_news(symbol, start_date=start_date, end_date=end_date, limit=8, provider=provider),
+                    refresh=refresh, allow_stale=allow_stale,
+                )
+                news = normalize_company_news(filter_company_news(raw, asset), asset, policy=self._freshness_policy, now=now)
+            except (ResearchError, ValueError) as exc:
+                failures.append(self._failure("news", exc))
 
-        quality = self._aggregate_quality((prices, profile, fundamentals, valuation, earnings, estimates, crypto), failures)
+        if "filings" in selected:
+            try:
+                raw = self._fetch(
+                    symbol, "company_filings", provider, (("limit", "12"),),
+                    lambda: self._client.get_company_filings(symbol, limit=12, provider=provider),
+                    refresh=refresh, allow_stale=allow_stale,
+                )
+                filings = normalize_filings(raw, asset, policy=self._freshness_policy, now=now)
+            except (ResearchError, ValueError) as exc:
+                failures.append(self._failure("filings", exc))
+
+        if "estimates" in selected:
+            try:
+                raw = self._fetch(
+                    symbol, "estimates_consensus", provider, (),
+                    lambda: self._client.get_estimates_consensus(symbol, provider=provider),
+                    refresh=refresh, allow_stale=allow_stale,
+                )
+                estimates = normalize_estimates(raw, asset, policy=self._freshness_policy, now=now)
+            except (ResearchError, ValueError) as exc:
+                failures.append(self._failure("estimates", exc))
+
+        quality = self._aggregate_quality((quote, prices, profile, fundamentals, valuation, earnings, filings, news, estimates, crypto), failures)
         return AssetResearchData(
             asset=asset,
+            quote=quote,
             prices=prices,
             profile=profile,
             fundamentals=fundamentals,
             valuation=valuation,
             earnings=earnings,
+            filings=filings,
+            news=news,
             estimates=estimates,
             crypto=crypto,
             failures=tuple(failures),
@@ -164,6 +225,9 @@ class CanonicalResearchService:
         self,
         indicator: str,
         *,
+        series_id: str | None = None,
+        transform: str | None = None,
+        unit: str | None = None,
         country: str = "united_states",
         frequency: Literal["annual", "quarter", "month"] = "month",
         start_date: date | datetime | str | None = None,
@@ -175,8 +239,12 @@ class CanonicalResearchService:
     ):
         raw = self._fetch(
             indicator, "macro_series", provider,
-            (("country", country), ("frequency", frequency), ("start_date", str(start_date or "")), ("end_date", str(end_date or ""))),
-            lambda: self._client.get_macro_series(indicator, country=country, frequency=frequency, start_date=start_date, end_date=end_date, provider=provider),
+            (("series_id", series_id or ""), ("transform", transform or ""), ("unit", unit or ""), ("country", country), ("frequency", frequency), ("start_date", str(start_date or "")), ("end_date", str(end_date or ""))),
+            lambda: self._client.get_macro_series(
+                indicator, series_id=series_id, transform=transform, unit=unit,
+                country=country, frequency=frequency, start_date=start_date,
+                end_date=end_date, provider=provider,
+            ),
             refresh=refresh, allow_stale=allow_stale,
         )
         return normalize_macro(raw, policy=self._freshness_policy, now=now)
@@ -206,7 +274,7 @@ class CanonicalResearchService:
         return SectionFailure(
             section=section,
             code=getattr(exc, "code", "normalization_error"),
-            message=str(exc),
+            message=getattr(exc, "public_message", "This research section is unavailable."),
             provider=getattr(exc, "provider", None),
         )
 

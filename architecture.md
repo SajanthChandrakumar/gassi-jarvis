@@ -72,14 +72,16 @@ protocol — is in [`docs/trading-financial-contract.md`](docs/trading-financial
 
 `app.trading.research.OpenBBResearchClient` is the provider-agnostic boundary
 for raw financial research data. It uses OpenBB behind a small Jarvis-facing
-interface for equity/ETF and crypto price history, company profiles, financial
-statements, earnings calendars, and macroeconomic indicator series.
+interface for equity/ETF quotes and price history, profiles, statements,
+valuation metrics, estimates, bounded earnings calendars, SEC filings,
+direct-mention company news, crypto prices, and five macro series.
 
 ```text
 Jarvis research layer -> OpenBB -> financial data providers
 ```
 
-The adapter returns structured raw data and provider/retrieval provenance; it
+The adapter returns structured raw data, safe provider-attempt outcomes, and
+provider/retrieval provenance; it
 does not invoke Gemini, interpret data, rank findings, calculate indicators, or
 produce investment recommendations. Provider details and optional credentials
 remain inside OpenBB configuration. VectorBT, portfolio analysis, backtesting,
@@ -95,7 +97,7 @@ OpenBB -> provider responses -> normalization layer -> canonical research data -
 ```
 
 Canonical observations are immutable and provider-agnostic. They preserve an
-asset identity, per-section provenance, an `as_of` observation timestamp,
+asset identity, per-section provenance and provider attempts, an `as_of` observation timestamp,
 separate UTC `retrieved_at` timestamp, deterministic quality/freshness state,
 and explicit missing values (`None` never means zero). The selective
 `CanonicalResearchService` fetches only requested sections and reports failed

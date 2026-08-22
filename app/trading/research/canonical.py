@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 
 class CanonicalAssetType(StrEnum):
@@ -45,6 +45,19 @@ class Availability(StrEnum):
     NOT_SUPPORTED = "not_supported"
     NOT_REQUESTED = "not_requested"
     UPSTREAM_ERROR = "upstream_error"
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderAttempt:
+    provider: str | None
+    outcome: Literal["success", "failure"]
+    code: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.provider is not None:
+            object.__setattr__(self, "provider", _identifier(self.provider, "provider"))
+        if self.outcome not in {"success", "failure"}:
+            raise ValueError("outcome must be success or failure")
 
 
 def _utc(value: datetime, field: str) -> datetime:
@@ -90,6 +103,7 @@ class ResearchProvenance:
     source_category: str
     retrieved_at: datetime
     request_parameters: tuple[tuple[str, str], ...] = ()
+    attempts: tuple[ProviderAttempt, ...] = ()
 
     def __post_init__(self) -> None:
         if self.provider is not None:
@@ -97,6 +111,7 @@ class ResearchProvenance:
         object.__setattr__(self, "source_category", _identifier(self.source_category, "source_category"))
         object.__setattr__(self, "retrieved_at", _utc(self.retrieved_at, "retrieved_at"))
         object.__setattr__(self, "request_parameters", tuple(sorted((str(key), str(value)) for key, value in self.request_parameters)))
+        object.__setattr__(self, "attempts", tuple(self.attempts))
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +158,30 @@ class PriceSeries:
         if any(not isinstance(bar, PriceBar) for bar in bars):
             raise TypeError("bars must contain PriceBar values")
         object.__setattr__(self, "bars", bars)
+        if self.as_of is not None:
+            object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
+
+
+@dataclass(frozen=True, slots=True)
+class EquityQuote:
+    asset: AssetIdentity
+    last_price: Decimal | None
+    previous_close: Decimal | None
+    open: Decimal | None
+    high: Decimal | None
+    low: Decimal | None
+    volume: Decimal | None
+    year_high: Decimal | None
+    year_low: Decimal | None
+    moving_average_50d: Decimal | None
+    moving_average_200d: Decimal | None
+    currency: str | None
+    provenance: ResearchProvenance
+    as_of: datetime | None
+    freshness: FreshnessStatus
+    quality: DataQuality
+
+    def __post_init__(self) -> None:
         if self.as_of is not None:
             object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
 
@@ -225,12 +264,76 @@ class EarningsData:
 
 
 @dataclass(frozen=True, slots=True)
+class NewsArticle:
+    published_at: datetime
+    title: str
+    excerpt: str | None = None
+    url: str | None = None
+    source: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "published_at", _utc(self.published_at, "published_at"))
+        object.__setattr__(self, "title", _identifier(self.title, "title"))
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyNews:
+    asset: AssetIdentity
+    articles: tuple[NewsArticle, ...]
+    provenance: ResearchProvenance
+    as_of: datetime | None
+    freshness: FreshnessStatus
+    quality: DataQuality
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "articles", tuple(sorted(self.articles, key=lambda item: item.published_at, reverse=True)))
+        if self.as_of is not None:
+            object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFiling:
+    form_type: str
+    filing_date: datetime
+    report_date: datetime | None
+    description: str | None
+    accession_number: str | None
+    url: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "form_type", _identifier(self.form_type, "form_type").upper())
+        object.__setattr__(self, "filing_date", _utc(self.filing_date, "filing_date"))
+        if self.report_date is not None:
+            object.__setattr__(self, "report_date", _utc(self.report_date, "report_date"))
+        object.__setattr__(self, "url", _identifier(self.url, "url"))
+
+
+@dataclass(frozen=True, slots=True)
+class CompanyFilings:
+    asset: AssetIdentity
+    items: tuple[CompanyFiling, ...]
+    provenance: ResearchProvenance
+    as_of: datetime | None
+    freshness: FreshnessStatus
+    quality: DataQuality
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "items", tuple(sorted(self.items, key=lambda item: item.filing_date, reverse=True)))
+        if self.as_of is not None:
+            object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
+
+
+@dataclass(frozen=True, slots=True)
 class EstimatesData:
     asset: AssetIdentity
     availability: Availability
     provenance: ResearchProvenance | None
     freshness: FreshnessStatus
     quality: DataQuality
+    metrics: tuple[tuple[str, Decimal | None], ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metrics", tuple(sorted(self.metrics)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,11 +387,14 @@ class AssetResearchData:
     """Selective aggregate; omitted sections were not requested, not zero."""
 
     asset: AssetIdentity
+    quote: EquityQuote | None = None
     prices: PriceSeries | None = None
     profile: CompanyProfile | None = None
     fundamentals: FundamentalsData | None = None
     valuation: ValuationData | None = None
     earnings: EarningsData | None = None
+    news: CompanyNews | None = None
+    filings: CompanyFilings | None = None
     estimates: EstimatesData | None = None
     crypto: CryptoMarketData | None = None
     failures: tuple[SectionFailure, ...] = ()
