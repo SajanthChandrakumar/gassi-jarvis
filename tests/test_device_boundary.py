@@ -1,11 +1,39 @@
 """Focused contracts for the local Mac capability boundary."""
 
 import asyncio
+import subprocess
+import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+
+
+def test_contract_import_does_not_require_mac_only_modules():
+    script = """
+import builtins
+
+real_import = builtins.__import__
+
+def block_mac_modules(name, *args, **kwargs):
+    if name in {"app.security", "app.vision"}:
+        raise ImportError(f"blocked Mac-only module: {name}")
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = block_mac_modules
+from app.device.models import DeviceResult
+
+assert DeviceResult(status="succeeded").status == "succeeded"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=".",
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_device_models_expose_typed_action_lifecycle_contracts():
@@ -34,6 +62,24 @@ def test_device_models_expose_typed_action_lifecycle_contracts():
     assert lifecycle.result.status == "succeeded"
 
 
+def test_rejected_result_has_a_matching_lifecycle_status():
+    from app.device.models import ActionPayload, ActionStatus, DeviceAction, DeviceLifecycle, DeviceResult
+
+    action = DeviceAction(
+        action_id="reject-1",
+        payload=ActionPayload(action_type="open_app", payload='Bad"Name'),
+    )
+    result = DeviceResult(action_id="reject-1", status="rejected")
+    lifecycle = DeviceLifecycle(
+        action=action,
+        result=result,
+        status=ActionStatus.REJECTED,
+    )
+
+    assert result.status == ActionStatus.REJECTED
+    assert lifecycle.status == ActionStatus.REJECTED
+
+
 def test_executor_preserves_app_name_validation_and_shell_security():
     from app.device.executor import (
         execute_shell_command,
@@ -46,6 +92,20 @@ def test_executor_preserves_app_name_validation_and_shell_security():
     assert security_level("echo hi") == 0
     assert security_level("rm -rf /") == 2
     assert "[SECURITY]" in execute_shell_command("rm -rf /tmp/not-run")
+
+
+def test_executor_rejects_invalid_app_name_without_launching(monkeypatch):
+    from app.device import executor
+
+    run = Mock()
+    monkeypatch.setattr(executor.subprocess, "run", run)
+
+    result = executor.open_app('Safari"; do evil')
+
+    assert result.status == "rejected"
+    assert result.action == "open_app_rejected"
+    assert "unzulässige Zeichen" in result.output
+    run.assert_not_called()
 
 
 def test_executor_launches_validated_app_with_osascript(monkeypatch):
@@ -66,6 +126,34 @@ def test_executor_launches_validated_app_with_osascript(monkeypatch):
     assert result.action == "open_app: Safari"
 
 
+@pytest.mark.parametrize(
+    ("error", "action"),
+    [
+        (subprocess.TimeoutExpired("osascript", 10), "open_app_timeout"),
+        (OSError("osascript missing"), "open_app_error"),
+    ],
+)
+def test_executor_reports_app_launch_failures(monkeypatch, error, action):
+    from app.device import executor
+
+    monkeypatch.setattr(executor.subprocess, "run", Mock(side_effect=error))
+
+    result = executor.open_app("Safari")
+
+    assert result.status == "failed"
+    assert result.action == action
+
+
+def test_executor_forwards_force_to_shell_router(monkeypatch):
+    from app.device import executor
+
+    shell = Mock(return_value="forced")
+    monkeypatch.setattr(executor, "_execute_shell_command", shell)
+
+    assert executor.execute_shell_command("rm -rf /tmp/nope", force=True) == "forced"
+    shell.assert_called_once_with("rm -rf /tmp/nope", force=True)
+
+
 def test_executor_captures_screen_through_device_boundary(monkeypatch):
     from app.device import executor
 
@@ -74,6 +162,16 @@ def test_executor_captures_screen_through_device_boundary(monkeypatch):
 
     assert executor.capture_screen() == b"jpeg"
     capture.assert_called_once_with()
+
+
+def test_executor_preserves_screenshot_failure(monkeypatch):
+    from app.device import executor
+
+    capture = Mock(side_effect=PermissionError("screen recording unavailable"))
+    monkeypatch.setattr(executor, "capture_and_compress_screen", capture)
+
+    with pytest.raises(PermissionError, match="screen recording unavailable"):
+        executor.capture_screen()
 
 
 def test_main_routes_mac_tools_through_executor(monkeypatch):

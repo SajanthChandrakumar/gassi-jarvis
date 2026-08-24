@@ -29,6 +29,7 @@ class ActionStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    REJECTED = "rejected"
     EXPIRED = "expired"
     UNAVAILABLE = "unavailable"
 
