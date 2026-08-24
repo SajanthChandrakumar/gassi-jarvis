@@ -3,15 +3,21 @@
 from importlib import import_module
 
 from .models import (
+    ActionResult,
     ActionPayload,
     ActionStatus,
     ActionType,
+    AgentUnavailable,
+    ApprovalRequired,
+    ApprovedAction,
     DeviceAction,
+    DeviceActionRequest,
     DeviceDecision,
     DeviceLifecycle,
     DeviceResult,
     DeviceStatus,
     DeviceUnavailable,
+    RejectedAction,
 )
 
 
@@ -36,14 +42,20 @@ def __getattr__(name: str):
 
 __all__ = [
     "ActionPayload",
+    "ActionResult",
     "ActionStatus",
     "ActionType",
+    "AgentUnavailable",
+    "ApprovalRequired",
+    "ApprovedAction",
     "DeviceAction",
+    "DeviceActionRequest",
     "DeviceDecision",
     "DeviceLifecycle",
     "DeviceResult",
     "DeviceStatus",
     "DeviceUnavailable",
+    "RejectedAction",
     "MacExecutor",
     "capture_screen",
     "execute_shell_command",

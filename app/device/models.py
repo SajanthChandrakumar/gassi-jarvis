@@ -23,6 +23,7 @@ class ActionStatus(StrEnum):
     """States in the device action lifecycle."""
 
     QUEUED = "queued"
+    DELIVERED = "delivered"
     AWAITING_APPROVAL = "awaiting_approval"
     APPROVED = "approved"
     DENIED = "denied"
@@ -127,6 +128,35 @@ class DeviceUnavailable(BaseModel):
     action_id: str | None = None
 
 
+class ApprovalRequired(BaseModel):
+    """Agent event indicating that human approval is required."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(..., min_length=1)
+    status: Literal["awaiting_approval"] = "awaiting_approval"
+    expires_at: datetime | None = None
+
+
+class ApprovedAction(BaseModel):
+    """Cloud decision delivered to the outbound agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(..., min_length=1)
+    status: Literal["approved"] = "approved"
+
+
+class RejectedAction(BaseModel):
+    """Cloud rejection delivered to the outbound agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str = Field(..., min_length=1)
+    status: Literal["rejected"] = "rejected"
+    reason: str | None = None
+
+
 class DeviceStatus(BaseModel):
     """Current reachability and identity of the configured Mac device."""
 
@@ -156,6 +186,7 @@ class DeviceLifecycle(BaseModel):
     decision: DeviceDecision | None = None
     result: DeviceResult | None = None
     unavailable: DeviceUnavailable | None = None
+    analysis: str | None = None
     status: ActionStatus = ActionStatus.QUEUED
     updated_at: datetime = Field(default_factory=_utc_now)
 
@@ -166,16 +197,24 @@ DeviceActionPayload = ActionPayload
 DeviceActionDecision = DeviceDecision
 DeviceActionResult = DeviceResult
 DeviceUnavailableResult = DeviceUnavailable
+DeviceActionRequest = DeviceAction
+ActionResult = DeviceResult
+AgentUnavailable = DeviceUnavailable
 
 
 __all__ = [
     "ActionPayload",
+    "ActionResult",
     "ActionStatus",
     "ActionType",
+    "AgentUnavailable",
+    "ApprovalRequired",
+    "ApprovedAction",
     "DeviceAction",
     "DeviceActionDecision",
     "DeviceActionPayload",
     "DeviceActionResult",
+    "DeviceActionRequest",
     "DeviceConnectionStatus",
     "DeviceDecision",
     "DeviceLifecycle",
@@ -183,4 +222,5 @@ __all__ = [
     "DeviceStatus",
     "DeviceUnavailable",
     "DeviceUnavailableResult",
+    "RejectedAction",
 ]

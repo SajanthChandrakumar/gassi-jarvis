@@ -31,6 +31,8 @@ ENV/
 
 # Lokale Datenbank
 jarvis_brain/
+jarvis_cloud.sqlite3*
+jarvis_device_agent.sqlite3*
 
 # Persistierte Session-States (enthalten Gesprächsverlauf)
 jarvis_sessions.json
