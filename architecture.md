@@ -225,7 +225,6 @@ variables are:
 
 | Variable | Contract |
 |---|---|
-| `GOOGLE_API_KEY` | Cloud Gemini credential. |
 | `GOOGLE_API_KEY` | Required by the cloud Gemini integration; tests use a dummy value. |
 | `JARVIS_API_TOKEN` | Empty by default; remote frontend routes require it, while empty-token mode is localhost-only. |
 | `JARVIS_DEVICE_TOKEN` | Required by agent poll/event routes; separate from the frontend token and cannot approve actions. |

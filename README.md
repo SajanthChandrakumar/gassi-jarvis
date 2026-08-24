@@ -193,7 +193,7 @@ does not replace the PWA or gain a Mac-agent path:
 ```yaml
 widget:
   type: customapi
-  url: http://<cloud-tailnet-host>:8000/api/memories/recent
+  url: https://<machine>.<tailnet>.ts.net/api/memories/recent
   method: GET
   refreshInterval: 600000
   headers:
@@ -203,6 +203,10 @@ widget:
     - field: memories
       label: Zuletzt gemerkt
 ```
+
+Use the Tailscale Serve HTTPS URL when Homepage is remote or accessed from a
+phone. If Homepage is co-located on the same host as the cloud listener, its
+URL may instead be `http://127.0.0.1:8000/api/memories/recent`.
 
 Bookmark Homepage or install the Jarvis PWA for phone use. Read
 [`app/security.py`](app/security.py), [SECURITY.md](SECURITY.md), and
