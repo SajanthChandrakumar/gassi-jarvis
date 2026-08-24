@@ -50,6 +50,53 @@ orders. Calendar remains cloud-side; event creation uses its existing separate
 HitL flow. A future portfolio module would remain cloud-side, but portfolio
 APIs and trading execution are not implemented.
 
+### Deterministic research phase boundary
+
+The cloud research path is a separate read-only branch and never creates a
+device intent. Its implemented progression is:
+
+```text
+OpenBB provider responses
+  -> canonical research data
+  -> deterministic relevance findings
+  -> structured asset reports
+  -> historical/statistical research
+  -> bounded natural-language orchestration
+```
+
+- **OpenBB/data access:** [`docs/openbb-research.md`](docs/openbb-research.md)
+  keeps providers behind `app.trading.research.OpenBBResearchClient` and
+  preserves provider/retrieval outcomes without Gemini calculations.
+- **Canonical data (Phase 2):**
+  [`docs/canonical-research-data.md`](docs/canonical-research-data.md)
+  normalizes identity, provenance, `as_of`, retrieval time, quality,
+  freshness, and explicit missing values.
+- **Relevance (Phase 3):**
+  [`docs/research-relevance-engine.md`](docs/research-relevance-engine.md)
+  deterministically scores evidence-backed findings while keeping relevance
+  separate from confidence.
+- **Asset reports (Phase 4):**
+  [`docs/asset-research-reports.md`](docs/asset-research-reports.md) composes
+  canonical observations and findings without fetching, calculating, or
+  recommending.
+- **Historical research (Phase 5):**
+  [`docs/historical-research.md`](docs/historical-research.md) builds explicit
+  event/forward-return context with look-ahead warnings.
+- **Statistical research (Phase 6):**
+  [`docs/statistical-research.md`](docs/statistical-research.md) performs
+  deterministic returns, alignment, correlation, beta, distribution, regime,
+  and volatility analysis with sample/quality limitations.
+- **Natural-language bridge (Phase 7):**
+  [`docs/natural-language-quant-research.md`](docs/natural-language-quant-research.md)
+  exposes only bounded high-level research tools and returns structured
+  `research_payload`; it cannot choose arbitrary provider routes or chain
+  calculations.
+
+The broader financial state contract is
+[`docs/trading-financial-contract.md`](docs/trading-financial-contract.md).
+Portfolio, trading execution, recommendations, and portfolio APIs remain
+future/out of scope.
+
 ### Mac capability zone
 
 `app/device/agent.py` is an outbound-only client. It opens no listener and
@@ -72,14 +119,15 @@ The shared Pydantic contracts live in [`app/device/models.py`](app/device/models
 | `DeviceStatus` | `device_id`, `available`, `status`, `last_seen_at`, reason | Cloud → frontend |
 | `DeviceAction` | `action_id`, `device_id`, typed `ActionPayload`, `requires_approval`, creation time | Cloud → agent |
 | `ActionPayload` | `action_type` (`open_app`, `shell_command`, `take_screenshot`), raw payload, `tainted` | Cloud → agent; stored unchanged locally |
-| `DeviceDecision` | `action_id`, `approved`, optional reason, timestamp | Frontend → cloud → agent |
+| `DeviceDecision` | `action_id`, `approved`, optional `reason`, `decided_at` | Frontend → cloud → agent |
 | `DeviceResult` | action id, terminal status, output/action/error, finished time | Agent → cloud → frontend |
 | `DeviceUnavailable` | `available: false`, reason, optional action id | Cloud → frontend |
 | `DeviceLifecycle` | action + optional decision/result/unavailable/analysis + status | Cloud → frontend |
 
-The cloud queue has no browser-facing arbitrary-action creation route. Chat and
-research orchestration create typed intents internally. Frontend/user routes
-use `JARVIS_API_TOKEN`:
+The cloud queue has no browser-facing arbitrary-action creation route. Chat
+orchestration creates typed device intents internally; research endpoints are
+an independent cloud-only branch and never create device intents. Frontend/user
+routes use `JARVIS_API_TOKEN`:
 
 ```text
 GET  /api/device/status
@@ -108,7 +156,7 @@ model rather than merely another env file.
 
 ```text
 cloud online check
-  ├─ offline → DeviceUnavailable; no queue entry and no execution
+  ├─ offline at check → DeviceUnavailable; a concurrent queued/leased action may remain
   └─ online → queued
                ↓ agent POST poll (heartbeat + 30 s delivery lease)
              delivered
@@ -122,16 +170,22 @@ cloud online check
 ```
 
 The agent polls every two seconds. A successful poll is also the heartbeat;
-the cloud reports offline after 10 seconds without one. New work is refused
-while offline rather than retained for surprise execution. A delivered cloud
-lease lasts 30 seconds and is reclaimed if the agent disappears. Reconnect
-backoff is bounded at 30 seconds.
+the cloud reports offline after 10 seconds without one. New work observed as
+offline is refused immediately rather than intentionally retained for surprise
+execution. This is a point-in-time check, however: a request can pass the
+check just as the agent disconnects, so an already queued or leased action can
+remain durable, have its 30-second lease reclaimed, and be redelivered later.
+Reconnect backoff is bounded at 30 seconds. Frontend lifecycle polling has a
+bounded UI timeout but there is no cancel route; a frontend timeout does not
+cancel the cloud action.
 
 The cloud and local agent both enforce the five-minute approval window. The
 agent's monotonic deadline is authoritative for execution and is tied to a
 boot/process identity so a restart cannot extend an old approval. The cloud
-expires its lifecycle view as well. An approval contains only an action ID:
-the agent can execute only the payload it already stored for that ID.
+expires its lifecycle view as well. A frontend decision contains
+`action_id`, `approved`, optional `reason`, and cloud-recorded `decided_at`; the
+browser never resends executable payload text. The agent can execute only the
+payload it already stored for that ID.
 
 Action IDs and payload hashes make insertion and redelivery idempotent. A
 same-ID/different-payload substitution is rejected. The agent records a
@@ -151,15 +205,18 @@ oversized capture produces a typed result and no image persistence.
 ## Cloud as approval relay: explicit limitation
 
 The cloud coordinates the user-facing decision and forwards an action-ID-only
-decision. The Mac agent remains authoritative for shell classification and
-reclassifies every shell payload locally, but the agent authenticates the
-decision only as an authenticated cloud decision; it cannot prove that a
-human clicked the frontend. Consequently, a compromised cloud process,
-`JARVIS_API_TOKEN` combined with cloud access, or `JARVIS_DEVICE_TOKEN` can
-approve a queued dangerous action or enqueue new work. The cloud queue and
-tokens are part of the HitL trust base. This design limits payload
-substitution and accidental replay, but it does not make a compromised cloud
-an untrusted approval source.
+decision. The frontend's `JARVIS_API_TOKEN` can submit the decision; the
+agent's `JARVIS_DEVICE_TOKEN` cannot call the decision route. The Mac agent
+remains authoritative for shell classification and reclassifies every shell
+payload locally, but it authenticates the decision only as an authenticated
+cloud decision; it cannot prove that a human clicked the frontend.
+Consequently, a compromised cloud process or frontend token with cloud access
+can approve a queued dangerous action or enqueue new work. A compromised
+device token cannot approve through the frontend route, but can forge
+authenticated agent approval-required/result events for known action IDs. The
+cloud queue and both tokens are part of the HitL trust base. This design limits
+payload substitution and accidental replay, but it does not make a compromised
+cloud or agent credential an untrusted approval source.
 
 ## Runtime configuration and origin contract
 
@@ -169,19 +226,24 @@ variables are:
 | Variable | Contract |
 |---|---|
 | `GOOGLE_API_KEY` | Cloud Gemini credential. |
-| `JARVIS_API_TOKEN` | Frontend/user bearer; unset means localhost-only development behavior. |
-| `JARVIS_DEVICE_TOKEN` | Agent-only bearer; separate from the frontend token. |
-| `JARVIS_DEVICE_ID` | One configured identity, default `local-mac`. |
-| `JARVIS_ALLOWED_ORIGINS` | Browser CORS origins, including a separately hosted static PWA origin. |
-| `JARVIS_FRONTEND_API_BASE_URL` | Optional `http://` or `https://` origin only. Empty or `/` path is accepted; credentials, query, fragment, `/api`, and other paths are rejected and fall back to same-origin. |
-| `JARVIS_CLOUD_DB_PATH` | Durable cloud queue SQLite path. |
-| `JARVIS_BRAIN_DIR` / `JARVIS_SESSIONS_FILE` | ChromaDB and session persistence paths. |
-| `JARVIS_CLOUD_API_BASE_URL` | Agent cloud origin; remote HTTPS only, with HTTP allowed for explicit loopback compatibility mode. |
-| `JARVIS_DEVICE_AGENT_STATE_PATH` | Local agent SQLite state path. |
-| `JARVIS_SHELL_CWD` | Existing absolute local sandbox required by the agent. |
-| `JARVIS_LOG_LEVEL` | Cloud logging level. |
-| `JARVIS_GCAL_CREDENTIALS` / `JARVIS_GCAL_TOKEN` | Optional cloud Calendar OAuth paths. |
-| `JARVIS_AGENT_PROJECT_DIR` / `JARVIS_AGENT_PYTHON` | Launchd wrapper paths. |
+| `GOOGLE_API_KEY` | Required by the cloud Gemini integration; tests use a dummy value. |
+| `JARVIS_API_TOKEN` | Empty by default; remote frontend routes require it, while empty-token mode is localhost-only. |
+| `JARVIS_DEVICE_TOKEN` | Required by agent poll/event routes; separate from the frontend token and cannot approve actions. |
+| `JARVIS_DEVICE_ID` | `local-mac` by default; one configured identity in this phase. |
+| `JARVIS_ALLOWED_ORIGINS` | Defaults to `http://localhost:8000,http://127.0.0.1:8000`; set comma-separated browser origins. |
+| `JARVIS_FRONTEND_API_BASE_URL` | Empty by default, meaning same-origin. Otherwise HTTP(S) origin/root only; credentials, query, fragment, `/api`, and other paths fall back to same-origin. |
+| `JARVIS_CLOUD_DB_PATH` | `jarvis_cloud.sqlite3` by default; Compose overrides `/data/device/jarvis_cloud.sqlite3`. |
+| `JARVIS_CLOUD_PORT` | Compose interpolation only; `8000` by default. |
+| `JARVIS_CLOUD_ENV_FILE` | Compose interpolation only; `./deploy/cloud.env` by default. |
+| `JARVIS_BRAIN_DIR` | `<repo>/jarvis_brain` by default; Compose sets `/data/chroma`. |
+| `JARVIS_SESSIONS_FILE` | `<repo>/jarvis_sessions.json` by default next to the brain dir; Compose sets `/data/sessions/jarvis_sessions.json`. |
+| `JARVIS_CLOUD_API_BASE_URL` | Required by the agent; remote HTTPS only, with loopback HTTP allowed for compatibility mode. |
+| `JARVIS_DEVICE_AGENT_STATE_PATH` | `jarvis_device_agent.sqlite3` by default, relative to the agent process. |
+| `JARVIS_SHELL_CWD` | Required by the agent; must be an existing absolute local sandbox. |
+| `JARVIS_LOG_LEVEL` | `INFO` by default (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `JARVIS_GCAL_CREDENTIALS` / `JARVIS_GCAL_TOKEN` | Project-root `gcal_credentials.json`/`gcal_token.json` by default; optional OAuth overrides. |
+| `JARVIS_AGENT_ENV_FILE` | `$HOME/.config/jarvis/mac-agent.env` by default for the LaunchAgent wrapper. |
+| `JARVIS_AGENT_PROJECT_DIR` / `JARVIS_AGENT_PYTHON` | Required by the LaunchAgent wrapper. |
 
 `GET /config.js` returns `window.JARVIS_CONFIG = { apiBaseUrl: "..." }` with
 `Cache-Control: no-store`. A static host must provide the same origin/root
@@ -212,8 +274,9 @@ Because terminal results are recorded before reporting, restarting either
 process is safe for completed actions: a later poll/event replay converges on
 the stored result. Pending approvals from a new Mac boot/process expire
 fail-closed. Back up the cloud volumes and the local agent SQLite file before
-planned migration; database schema migrations are additive, but lost state
-cannot be reconstructed from the frontend.
+planned migration. Lost state cannot be reconstructed from the frontend;
+preserve the state file and verify the running agent understands the action
+models before allowing new work.
 
 ## Compatibility and migration risks
 

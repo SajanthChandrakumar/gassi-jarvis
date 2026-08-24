@@ -46,6 +46,13 @@ device token cannot read frontend routes.
   `POST /api/device-agent/poll` and
   `POST /api/device-agent/actions/{action_id}/events`. It is never embedded in
   the PWA, `config.js`, Compose YAML, plist, or committed examples.
+  It cannot call the frontend approval-decision route, but a compromised
+  device token can forge authenticated agent events/results for known action
+  IDs.
+- The frontend's `JARVIS_API_TOKEN` is the credential allowed to submit an
+  approval decision to the cloud. A decision carries `action_id`, `approved`,
+  optional `reason`, and cloud-recorded `decided_at`; the browser never
+  resends executable payload text.
 - `JARVIS_DEVICE_ID` defaults to `local-mac` and identifies the one supported
   Mac. Poll body and `X-Jarvis-Device-ID` mismatches are rejected.
 - Remote agent URLs must be HTTPS and cannot contain URL credentials. HTTP is
@@ -55,17 +62,32 @@ device token cannot read frontend routes.
   responses; it is not authentication. Tailscale Serve identity/app-capability
   headers describe transport context; they do not replace either Jarvis
   bearer.
+- SlowAPI limits `/api/chat`, `/api/research/run`, and the research status
+  routes to 20 requests/minute; `/api/memories/recent` is 10/minute. Behind a
+  tunnel, `app.main` keys these limits on the leftmost `X-Forwarded-For`
+  address so separate clients do not share the loopback bucket. Run uvicorn
+  with `--forwarded-allow-ips` set only to the trusted tunnel/proxy addresses;
+  `X-Forwarded-For` is spoofable if an untrusted client can reach the listener,
+  so it is not a hard brute-force defense. The bearer token remains the wall.
 - Keep both env files outside the repository and mode `0600`. Rotate the two
   tokens independently after an incident.
+
+The default CORS allowlist is `http://localhost:8000` and
+`http://127.0.0.1:8000`; `JARVIS_FRONTEND_API_BASE_URL` is empty by default,
+which means same-origin browser requests. Examples use `CHANGE_ME`
+placeholders only; no real credentials are stored in the repository.
 
 ## Device action controls
 
 The cloud checks its heartbeat before creating an action. An agent is online
-only when its last poll is within 10 seconds. New actions while offline return
-`DeviceUnavailable` immediately and are not queued for surprise execution.
-The outbound poll interval is two seconds, a delivered action lease is 30
-seconds, reconnect backoff is bounded at 30 seconds, and approval expires
-after 300 seconds.
+only when its last poll is within 10 seconds. New requests observed as offline
+return `DeviceUnavailable` immediately and are not intentionally queued for
+surprise execution. The check is point-in-time: an already queued or leased
+action can race with disconnect, remain durable, have its lease reclaimed, and
+be redelivered later. The frontend's bounded polling timeout does not cancel a
+cloud action. The outbound poll interval is two seconds, a delivered action
+lease is 30 seconds, reconnect backoff is bounded at 30 seconds, and approval
+expires after 300 seconds.
 
 The cloud and local agent use typed action IDs and payload hashes:
 
@@ -77,8 +99,9 @@ The cloud and local agent use typed action IDs and payload hashes:
    classifier failure fails closed. Explicit `requires_approval` also cannot
    lower the local requirement.
 4. The cloud receives `approval_required`, and the frontend submits a
-   `DeviceDecision` containing only `action_id`, approval state, and an
-   optional reason.
+   `DeviceDecision` containing `action_id`, `approved`, optional `reason`, and
+   cloud-recorded `decided_at`. The browser never sends executable payload text
+   in this decision.
 5. An approved action executes the locally stored payload with the existing
    executor. A denial produces a rejected result. A timeout or boot identity
    change produces an expired result.
@@ -92,7 +115,8 @@ pending approval. The cloud also expires its lifecycle view at the same TTL.
 
 ## Shell and HitL threat levels
 
-The existing `app/security.py` classifier remains the local authority:
+The existing [`app/security.py`](app/security.py) classifier remains the local
+authority:
 
 | Level | Examples | Default |
 |---|---|---|
@@ -115,13 +139,14 @@ bounded indirect-injection mitigation, not a proof against delayed attacks.
 
 The Mac agent authenticates an approval as a cloud decision, not as a
 cryptographically verifiable human gesture. Therefore a compromised cloud,
-cloud database, `JARVIS_API_TOKEN` with cloud access, or `JARVIS_DEVICE_TOKEN`
-can enqueue actions and approve a pending dangerous action by ID. Local
-reclassification still prevents a dangerous command from executing without an
-approval state, and payload hashes prevent replacing an already stored payload
-under the same ID, but the agent cannot distinguish a malicious cloud approval
-from a human-originated one. The cloud, queue, and both credentials must be
-protected as part of HitL.
+cloud database, or `JARVIS_API_TOKEN` with cloud access can enqueue actions and
+approve a pending dangerous action by ID. `JARVIS_DEVICE_TOKEN` cannot call
+the approval route, but it can forge authenticated agent events/results for
+known IDs. Local reclassification still prevents a dangerous command from
+executing without an approval state, and payload hashes prevent replacing an
+already stored payload under the same ID, but the agent cannot distinguish a
+malicious cloud approval from a human-originated one. The cloud, queue, and
+both credentials must be protected as part of HitL.
 
 ## Screenshot and data handling
 
@@ -136,8 +161,9 @@ Cloud financial research is deterministic and read-only. Provider provenance,
 retrieval time, freshness, quality, unavailable sections, and explicit missing
 values remain visible. Gemini is not a calculation engine, recommender, or
 trading executor. ChromaDB and sessions are assistant state, never the
-financial source of truth. Portfolio APIs and portfolio/trading execution are
-not implemented.
+financial source of truth. Research routes are cloud-only and never create
+device intents. Portfolio APIs and portfolio/trading execution are not
+implemented.
 
 ## Deployment and permissions
 

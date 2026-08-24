@@ -72,3 +72,50 @@ deprecation warning.
 - Docker runtime/build smoke testing remains unverified because Docker CLI is
   unavailable. The docs do not claim deployment success.
 - No live Mac, Calendar, provider, tunnel, or launchd operation was performed.
+
+## Review resolution (fix round 1)
+
+Applied the reviewer-requested corrections without another broad rewrite:
+
+- Restored concise README onboarding: Python 3.13/macOS prerequisites,
+  runtime plus `requirements-dev.txt` installation, Calendar OAuth, local and
+  tunnel/Tailscale operation, forwarded-header caveats, API examples, PWA
+  install/use, and the Homepage memory widget.
+- Restored the deterministic research phase boundary and links for OpenBB,
+  canonical data, relevance, asset reports, historical/statistical research,
+  and natural-language orchestration. Research is explicitly cloud-only and
+  never creates device intents.
+- Corrected exact defaults/requirements for CORS, same-origin frontend config,
+  log level, Compose port/env-file, brain/session/cloud/device state paths,
+  required agent URL/token/sandbox/wrapper paths, and the one-device identity.
+- Documented the point-in-time offline race: new requests observed offline are
+  rejected, but already queued/leased work can reclaim/redeliver; frontend UI
+  timeout does not cancel cloud work.
+- Corrected trust semantics: the frontend token can decide; the device token
+  cannot approve, but can forge authenticated agent events/results if
+  compromised. Decisions carry `action_id`, `approved`, `reason`, and
+  `decided_at`; browser decision requests never carry executable payload text.
+- Explicitly recorded that committed examples contain placeholders only and
+  no real secrets.
+- Removed the general database-schema-migration claim and avoided implying
+  that research causes device work.
+
+Fix-round verification:
+
+```text
+GOOGLE_API_KEY=test-only-key PYTHONPATH=. \
+  /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python -m pytest -q
+311 passed, 1 warning in 6.28s
+
+node --check app/static/app.js
+/usr/bin/plutil -lint deploy/launchd/com.gassi.jarvis.mac-agent.plist
+deploy/launchd/com.gassi.jarvis.mac-agent.plist: OK
+sh -n deploy/launchd/install.sh deploy/launchd/run-mac-agent.sh
+git diff --check
+```
+
+The Markdown link check covered five docs and 39 links; all local targets
+exist. The localhost integration remains an in-process FastAPI `TestClient`
+transport using independent cloud/agent state, not a real TCP two-process
+listener test. Docker CLI remains unavailable, so Docker build/run was not
+attempted. No external/Obsidian note was edited.

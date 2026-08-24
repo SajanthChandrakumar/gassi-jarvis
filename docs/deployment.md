@@ -23,13 +23,17 @@ The three zones are:
 The frontend never calls the Mac agent. The cloud is an approval relay and
 durable coordinator, not independent human attestation: an operator must treat
 the cloud process, queue, `JARVIS_API_TOKEN`, and `JARVIS_DEVICE_TOKEN` as part
-of the HitL trust base. The agent still reclassifies every shell command and
-rejects payload substitution/replay.
+of the HitL trust base. The frontend token can submit an approval decision; the
+device token cannot approve, but a compromised device token can forge
+authenticated agent events/results for known action IDs. The agent still
+reclassifies every shell command and rejects payload substitution/replay.
 
 ## Cloud with Compose
 
 Create an external env file, replace all placeholders, and keep it outside the
-repository. Use long, independently generated values for both bearer tokens:
+repository. The committed examples contain `CHANGE_ME` placeholders only; no
+real secrets are stored in Git. Use long, independently generated values for
+both bearer tokens:
 
 ```bash
 mkdir -p ~/.config/jarvis
@@ -54,6 +58,30 @@ and launchd/development files. The cloud requirements preserve the tested
 OpenBB and Uvicorn pins. Docker CLI availability is an environment concern;
 when it is unavailable, do not infer build or runtime success from static
 metadata.
+
+### Cloud/runtime configuration
+
+| Variable | Default / requirement |
+|---|---|
+| `GOOGLE_API_KEY` | Required by the cloud Gemini integration; use a dummy value only for credential-free tests. |
+| `JARVIS_API_TOKEN` | Empty by default; remote frontend routes require it, while empty-token mode is localhost-only. |
+| `JARVIS_DEVICE_TOKEN` | Required by agent poll/event routes; separate from the frontend token. |
+| `JARVIS_DEVICE_ID` | `local-mac` by default; one configured device. |
+| `JARVIS_ALLOWED_ORIGINS` | Defaults to `http://localhost:8000,http://127.0.0.1:8000`. |
+| `JARVIS_FRONTEND_API_BASE_URL` | Empty by default (same-origin); otherwise HTTP(S) origin/root only, never `/api`. |
+| `JARVIS_CLOUD_DB_PATH` | `jarvis_cloud.sqlite3` by default; Compose overrides `/data/device/jarvis_cloud.sqlite3`. |
+| `JARVIS_BRAIN_DIR` / `JARVIS_SESSIONS_FILE` | `<repo>/jarvis_brain` and `<repo>/jarvis_sessions.json` by default; Compose overrides `/data/chroma` and `/data/sessions/jarvis_sessions.json`. |
+| `JARVIS_LOG_LEVEL` | `INFO` by default. |
+| `JARVIS_CLOUD_PORT` | Compose interpolation only; `8000` by default. |
+| `JARVIS_CLOUD_ENV_FILE` | Compose interpolation only; `./deploy/cloud.env` by default. |
+
+Agent-only defaults and requirements are listed in the LaunchAgent section:
+`JARVIS_CLOUD_API_BASE_URL`, `JARVIS_DEVICE_TOKEN`, and `JARVIS_SHELL_CWD`
+are required; `JARVIS_DEVICE_ID` defaults to `local-mac` and
+`JARVIS_DEVICE_AGENT_STATE_PATH` defaults to `jarvis_device_agent.sqlite3`
+relative to the agent process. `JARVIS_AGENT_PROJECT_DIR` and
+`JARVIS_AGENT_PYTHON` are required by the wrapper, while
+`JARVIS_AGENT_ENV_FILE` defaults to `$HOME/.config/jarvis/mac-agent.env`.
 
 ## Private HTTPS exposure with Tailscale Serve
 
@@ -122,10 +150,12 @@ JARVIS_AGENT_PYTHON=/Users/name/Projects/gassi-jarvis/.venv/bin/python
 accepted only for `localhost`, `127.0.0.1`, or `::1` in local compatibility
 mode. The agent polls every two seconds, backs off at most 30 seconds, and
 sends its heartbeat with the same authenticated poll. The cloud reports the
-device offline after 10 seconds and rejects new device actions while offline;
-it does not queue surprise work for later execution. Delivered actions lease
-for 30 seconds. Approval is 300 seconds locally and cloud-side, and the local
-boot/process identity invalidates an old monotonic deadline after restart.
+device offline after 10 seconds and rejects new requests observed as offline;
+that check is point-in-time, so an already queued or leased action can race
+with disconnect, remain durable, have its 30-second lease reclaimed, and be
+redelivered later. A frontend polling timeout does not cancel the cloud action.
+Approval is 300 seconds locally and cloud-side, and the local boot/process
+identity invalidates an old monotonic deadline after restart.
 
 On macOS, grant the **Python/Terminal host running the agent**:
 
@@ -163,11 +193,13 @@ topology. Keep cloud and agent SQLite paths separate when testing.
    `device_id` and a recent heartbeat.
 3. Submit a safe device action through the normal chat route. Track its
    `action_id` with `GET /api/device/actions/{action_id}`. Approval decisions
-   use the frontend token and action ID only.
+   use the frontend token and contain `action_id`, `approved`, optional
+   `reason`, and cloud-recorded `decided_at`; executable payload text is never
+   resent by the browser.
 4. If the Mac is offline, expect a structured unavailable response immediately;
-   research, memory, chat, and cloud Calendar remain cloud-safe. Screenshot
-   bytes are bounded and analyzed in memory only, never persisted in SQLite or
-   logs.
+   research, memory, chat, and cloud Calendar remain cloud-safe and research
+   routes never create device intents. Screenshot bytes are bounded and
+   analyzed in memory only, never persisted in SQLite or logs.
 5. Keep the cloud volume and local agent SQLite file backed up before planned
    upgrades. Preserve these files across restarts so idempotency hashes,
    decisions, terminal results, and replay tombstones remain effective.
