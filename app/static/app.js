@@ -5,7 +5,16 @@
     const devicePolls = new Map();
     function getToken() { const raw = localStorage.getItem(TOKEN_KEY); if (!raw) return null; try { const data = JSON.parse(raw); if (!data.token || Date.now() - data.savedAt > TOKEN_TTL_MS) throw new Error('expired'); return data.token; } catch { localStorage.removeItem(TOKEN_KEY); return null; } }
     function storeToken(token) { localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, savedAt: Date.now() })); }
-    function normalizeApiBase(value) { const raw = String(value || '').trim(); if (!raw || !/^(?:https?):\/\/[^/]/i.test(raw) || raw.includes('?') || raw.includes('#')) return ''; try { const parsed = new URL(raw); if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || !parsed.hostname) return ''; parsed.pathname = parsed.pathname.replace(/\/+$/, ''); return parsed.toString().replace(/\/+$/, ''); } catch { return ''; } }
+    function normalizeApiBase(value) {
+      const raw = String(value || '').trim();
+      if (!raw || !/^(?:https?):\/\/[^/]/i.test(raw) || raw.includes('?') || raw.includes('#')) return '';
+      try {
+        const parsed = new URL(raw);
+        if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || !parsed.hostname || (parsed.pathname !== '/' && parsed.pathname !== '')) return '';
+        parsed.pathname = '';
+        return parsed.toString().replace(/\/+$/, '');
+      } catch { return ''; }
+    }
     const API_BASE_URL = normalizeApiBase(window.JARVIS_CONFIG?.apiBaseUrl);
     function apiUrl(path) { const endpoint = String(path || '').replace(/^\/+/, ''); return API_BASE_URL ? new URL(endpoint, API_BASE_URL + '/').toString() : '/' + endpoint; }
     function recoverAuthorization() { if (authRecoveryPromise) return authRecoveryPromise; authRecoveryPromise = Promise.resolve().then(() => { localStorage.removeItem(TOKEN_KEY); if (typeof window.prompt !== 'function') return false; const entered = window.prompt('Jarvis API token eingeben:'); if (!entered || !entered.trim()) return false; storeToken(entered.trim()); return true; }).finally(() => { authRecoveryPromise = null; }); return authRecoveryPromise; }

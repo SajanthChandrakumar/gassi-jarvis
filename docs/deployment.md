@@ -13,6 +13,7 @@ Copy `deploy/cloud.env.example` to an external file, replace every
 that path:
 
 ```bash
+mkdir -p ~/.config/jarvis
 cp deploy/cloud.env.example ~/.config/jarvis/cloud.env
 chmod 600 ~/.config/jarvis/cloud.env
 JARVIS_CLOUD_ENV_FILE="$HOME/.config/jarvis/cloud.env" docker compose -f compose.yaml up --build
@@ -38,11 +39,20 @@ Keep the cloud listener on localhost and expose it through Tailscale Serve:
 tailscale serve --bg --https=443 http://127.0.0.1:8000
 ```
 
-Use the resulting HTTPS origin in `JARVIS_ALLOWED_ORIGINS` and
-`JARVIS_FRONTEND_API_BASE_URL`. Tailscale Serve app tokens, when enabled by
-the tailnet policy, are transport/application credentials and are distinct
-from both Jarvis bearer tokens. Store an app token only in an external
-operator-owned env file or the Tailscale configuration; never put it in the
+For a separately hosted PWA, list the static host origin in
+`JARVIS_ALLOWED_ORIGINS` and keep it distinct from the API origin in
+`JARVIS_FRONTEND_API_BASE_URL`, for example:
+
+```ini
+JARVIS_ALLOWED_ORIGINS=https://jarvis-ui.example.test
+JARVIS_FRONTEND_API_BASE_URL=https://jarvis-api.example.test
+```
+
+Tailscale Serve identity/app-capability headers describe the transport context;
+they are not Jarvis authentication. They do not replace
+`Authorization: Bearer <JARVIS_API_TOKEN>` for the frontend, nor the separate
+`JARVIS_DEVICE_TOKEN` for the outbound Mac agent. Keep both Jarvis bearer
+tokens in the external operator-owned env files; never put them in the
 Compose file, plist, frontend, or image.
 
 ## Mac LaunchAgent

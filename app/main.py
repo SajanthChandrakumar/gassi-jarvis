@@ -371,11 +371,12 @@ async def get_frontend_config():
                 or "?" in configured
                 or "#" in configured
                 or not parsed.hostname
+                or parsed.path not in {"", "/"}
             ):
                 raise ValueError("invalid URL form")
             parsed.port  # Trigger validation for malformed ports.
             api_base_url = urlunsplit(
-                (parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), "", "")
+                (parsed.scheme.lower(), parsed.netloc, "", "", "")
             )
         except (TypeError, ValueError):
             log.warning(
