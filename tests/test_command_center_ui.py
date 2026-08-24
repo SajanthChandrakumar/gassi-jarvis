@@ -61,6 +61,40 @@ def test_service_worker_versions_every_command_center_asset() -> None:
         assert repr(path) in worker or f'"{path}"' in worker
 
 
+def test_service_worker_leaves_api_and_runtime_config_on_the_network() -> None:
+    worker = (STATIC / "sw.js").read_text(encoding="utf-8")
+
+    assert "req.method !== 'GET' || url.pathname.startsWith('/api/')" in worker
+    assert "url.pathname.startsWith('/api/')" in worker
+    assert "config.js" not in worker
+
+
+def test_frontend_loads_runtime_config_before_app_and_uses_one_api_url_helper() -> None:
+    html, js = UI_PATH.read_text(encoding="utf-8"), _js()
+
+    assert '<script src="/config.js" defer></script>' in html
+    assert html.index('/config.js') < html.index('/static/app.js')
+    assert "function apiUrl" in js
+    assert "fetch('/api/" not in js
+    for endpoint in ("/api/chat", "/api/research/run", "/api/research/providers", "/api/research/macro"):
+        assert f"fetch(apiUrl('{endpoint}'" in js
+
+
+def test_frontend_exposes_structured_device_status_approval_and_result_polling() -> None:
+    ui = _ui()
+
+    for identifier in ("deviceState", "deviceLabel"):
+        assert f'id="{identifier}"' in ui
+    for name in ("loadDeviceStatus", "renderDeviceAction", "submitDeviceDecision", "pollDeviceAction"):
+        assert f"function {name}" in ui
+    assert "device_action" in ui
+    assert "apiUrl('/api/device/status')" in ui
+    assert "apiUrl('/api/device/actions/'" in ui
+    assert "apiUrl('/api/device/actions/' + encodeURIComponent(actionId) + '/decision')" in ui
+    assert "setTimeout(() => pollDeviceAction" in ui
+    assert "/api/device-agent/" not in ui
+
+
 def test_asset_renderer_has_document_sections_and_compact_formatters() -> None:
     js = _js()
 
@@ -103,7 +137,7 @@ def test_command_center_has_command_first_prompt_and_research_modes() -> None:
 def test_research_requests_preserve_existing_chat_flow() -> None:
     ui = _ui()
 
-    assert "fetch('/api/chat'" in ui
+    assert "fetch(apiUrl('/api/chat'" in ui
     assert "session_id: sessionId" in ui
     assert "finance_research:" in ui
     assert "hitl_pending" in ui
@@ -147,7 +181,7 @@ def test_provider_status_is_explicit_and_does_not_expose_credentials() -> None:
 
     assert "Data coverage" in ui
     assert "loadProviderStatus" in ui
-    assert "'/api/research/providers'" in ui
+    assert "apiUrl('/api/research/providers')" in ui
     assert "Credential values are never displayed." in ui
     assert "configuration_state" in ui
     assert "Connection error. Please check that the Jarvis server is available." in ui
@@ -167,7 +201,7 @@ def test_command_center_loads_canonical_macro_context() -> None:
 
     assert 'id="macroState"' in ui
     assert "loadMacroContext" in ui
-    assert "'/api/research/macro'" in ui
+    assert "apiUrl('/api/research/macro')" in ui
     assert "macro-grid" in ui
     assert "Macro context" in ui
 
@@ -189,7 +223,7 @@ def test_navigation_opens_validated_research_workflows_and_charts() -> None:
     assert 'id="workflowAsset"' in ui
     assert 'id="workflowBenchmark"' in ui
     assert "openWorkflow" in ui
-    assert "fetch('/api/research/run'" in ui
+    assert "fetch(apiUrl('/api/research/run'" in ui
     assert "appendPriceChart" in ui
     assert ".workflow-panel[hidden], .workflow-panel [hidden] { display: none; }" in ui
     assert "price-chart" in ui

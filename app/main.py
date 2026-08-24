@@ -35,7 +35,7 @@ if certifi is not None:
 
 import edge_tts
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -350,6 +350,18 @@ async def get_index():
     if not os.path.exists(index_path):
         return {"error": "index.html nicht im Ordner app/static gefunden!"}
     return FileResponse(index_path)
+
+
+@app.get("/config.js")
+async def get_frontend_config():
+    """Serve the runtime API origin without allowing browser caching."""
+    api_base_url = os.environ.get("JARVIS_FRONTEND_API_BASE_URL", "").strip()
+    script = "window.JARVIS_CONFIG = { apiBaseUrl: " + json.dumps(api_base_url) + " };"
+    return Response(
+        content=script,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/sw.js")

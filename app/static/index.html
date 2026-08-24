@@ -14,6 +14,7 @@
   <link rel="icon" type="image/png" href="/static/icon-192.png">
   <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/config.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
@@ -72,6 +73,7 @@
             <div class="utility-section"><div class="section-heading"><h2 id="watchlistTitle">Watchlist</h2><span>Stored locally</span></div><form class="utility-form" id="watchlistForm"><input id="watchlistInput" aria-label="Add symbol to watchlist" maxlength="16" pattern="[A-Za-z0-9.\-]+" placeholder="Ticker"><button type="submit">Add</button></form><div class="utility-list" id="watchlistState"></div></div>
             <div class="utility-section macro-section"><div class="section-heading"><h2>Macro context</h2><span id="macroLabel">Checking</span></div><div id="macroState">Loading canonical macro observations.</div></div>
             <div class="utility-section provider-section"><div class="section-heading"><h2>Data coverage</h2><span id="providersLabel">Checking</span></div><div id="providerState">Checking configured research sources.</div></div>
+            <div class="utility-section device-section"><div class="section-heading"><h2>Mac agent</h2><span id="deviceLabel">Checking</span></div><div id="deviceState">Checking device connection.</div></div>
           </section>
 
           <section class="workspace" id="workspace" aria-labelledby="workspaceTitle">
