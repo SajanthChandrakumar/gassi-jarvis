@@ -13,3 +13,18 @@ jarvis_sessions.json
 .gitignore
 README.md
 tests/
+
+# The cloud image must not contain Mac-only capability implementations.
+app/device/agent.py
+app/device/executor.py
+app/device/state.py
+app/security.py
+app/vision.py
+*.applescript
+*.scpt
+
+# Local compatibility and launchd files stay on the operator's machine.
+deploy/
+deploy/launchd/
+scripts/
+scripts/run_local_compat.py

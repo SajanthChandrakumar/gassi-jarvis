@@ -18,6 +18,8 @@ venv/
 env/
 ENV/
 .env
+deploy/*.env
+deploy/launchd/*.env
 
 # Mac-spezifisches
 .DS_Store
