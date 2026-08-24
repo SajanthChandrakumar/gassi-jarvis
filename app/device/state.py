@@ -40,6 +40,7 @@ class StoredPayload:
     status: str
     lease_until: float | None
     approval_deadline: float | None
+    approval_boot_identity: str | None = None
 
 
 class AgentState:
@@ -70,7 +71,8 @@ class AgentState:
                     created_at TEXT NOT NULL,
                     requires_approval INTEGER NOT NULL DEFAULT 0,
                     lease_until REAL,
-                    approval_deadline REAL
+                    approval_deadline REAL,
+                    approval_boot_identity TEXT
                 );
                 CREATE TABLE IF NOT EXISTS decisions (
                     action_id TEXT PRIMARY KEY,
@@ -90,6 +92,16 @@ class AgentState:
                 );
                 """
             )
+            # Keep state files created by the first agent revision readable.
+            # SQLite has no IF NOT EXISTS form for ADD COLUMN.
+            columns = {
+                row["name"]
+                for row in self._db.execute("PRAGMA table_info(pending_payloads)")
+            }
+            if "approval_boot_identity" not in columns:
+                self._db.execute(
+                    "ALTER TABLE pending_payloads ADD COLUMN approval_boot_identity TEXT"
+                )
 
     @staticmethod
     def hash_payload(payload: Any) -> str:
@@ -160,6 +172,7 @@ class AgentState:
             status=row["status"],
             lease_until=row["lease_until"],
             approval_deadline=row["approval_deadline"],
+            approval_boot_identity=row["approval_boot_identity"],
         )
 
     def get_payload(self, action_id: str) -> DeviceAction | None:
@@ -177,11 +190,22 @@ class AgentState:
         ).fetchone()
         return self._row_to_payload(row)
 
-    def update_status(self, action_id: str, status: str, *, approval_deadline: float | None = None) -> None:
+    def update_status(
+        self,
+        action_id: str,
+        status: str,
+        *,
+        approval_deadline: float | None = None,
+        approval_boot_identity: str | None = None,
+    ) -> None:
         with self._lock, self._db:
             self._db.execute(
-                "UPDATE pending_payloads SET status = ?, approval_deadline = ? WHERE action_id = ?",
-                (str(status), approval_deadline, action_id),
+                """
+                UPDATE pending_payloads
+                SET status = ?, approval_deadline = ?, approval_boot_identity = ?
+                WHERE action_id = ?
+                """,
+                (str(status), approval_deadline, approval_boot_identity, action_id),
             )
 
     def claim_delivery(self, action_id: str, *, now: float, lease_seconds: float = 30.0) -> DeviceAction | None:
@@ -232,6 +256,15 @@ class AgentState:
             "SELECT decision_json FROM decisions WHERE action_id = ?", (action_id,)
         ).fetchone()
         return DeviceDecision.model_validate(json.loads(row["decision_json"])) if row else None
+
+    def awaiting_approvals(self) -> list[StoredPayload]:
+        """Return durable approval requests for retry/expiry processing."""
+
+        rows = self._db.execute(
+            "SELECT * FROM pending_payloads WHERE status = ? ORDER BY created_at",
+            ("awaiting_approval",),
+        ).fetchall()
+        return [stored for row in rows if (stored := self._row_to_payload(row)) is not None]
 
     def get_terminal_result(self, action_id: str) -> DeviceResult | None:
         row = self._db.execute(

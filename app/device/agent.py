@@ -16,8 +16,11 @@ import argparse
 import base64
 import json
 import os
+import subprocess
+import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -68,6 +71,39 @@ def _enum_value(value: Any) -> Any:
     return getattr(value, "value", value)
 
 
+def current_boot_identity() -> str:
+    """Return a boot-scoped identity, or a process identity on failure.
+
+    Linux exposes a stable boot UUID.  macOS exposes the boot time through
+    ``kern.boottime``.  If either platform mechanism is unavailable, a random
+    process identity intentionally invalidates all pending approvals after a
+    restart instead of risking execution under a new monotonic epoch.
+    """
+
+    if sys.platform.startswith("linux"):
+        try:
+            value = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+            if value:
+                return f"linux:{value}"
+        except (OSError, UnicodeError):
+            pass
+    elif sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["sysctl", "-n", "kern.boottime"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            value = result.stdout.strip()
+            if result.returncode == 0 and value:
+                return f"darwin:{value}"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return f"process:{uuid.uuid4().hex}"
+
+
 class MacAgent:
     """One outbound Mac agent with durable, replay-safe action handling."""
 
@@ -82,6 +118,7 @@ class MacAgent:
         transport: Transport | None = None,
         report: Report | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        boot_identity: str | Callable[[], str] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         request_timeout: float = 15.0,
     ) -> None:
@@ -99,6 +136,9 @@ class MacAgent:
         self.transport = transport or self._urllib_transport
         self.report = report
         self.monotonic = monotonic
+        if callable(boot_identity):
+            boot_identity = boot_identity()
+        self.boot_identity = boot_identity or current_boot_identity()
         self.sleep = sleep
         self.request_timeout = request_timeout
         self.poll_interval = POLL_INTERVAL_SECONDS
@@ -221,6 +261,41 @@ class MacAgent:
             event["screenshot_b64"] = base64.b64encode(screenshot).decode("ascii")
         self._report_event(event)
 
+    def _report_approval_required(self, action_id: str) -> None:
+        self._report_event(
+            {
+                "type": "approval_required",
+                "action_id": action_id,
+                "status": "awaiting_approval",
+            }
+        )
+
+    def _approval_expired(self, stored: Any) -> bool:
+        """Fail closed when a deadline is missing, stale, or from another boot."""
+
+        return (
+            stored.approval_deadline is None
+            or stored.approval_boot_identity != self.boot_identity
+            or self.monotonic() >= stored.approval_deadline
+        )
+
+    def _expire_waiting(self, stored: Any) -> DeviceResult | None:
+        if stored.status != "awaiting_approval" or not self._approval_expired(stored):
+            return None
+        return self._finish(
+            DeviceResult(
+                action_id=stored.action.action_id,
+                status="expired",
+                action="approval_expired",
+                error="approval TTL expired or boot identity changed",
+            )
+        )
+
+    def _retry_waiting_approvals(self) -> None:
+        for stored in self.state.awaiting_approvals():
+            if self._expire_waiting(stored) is None:
+                self._report_approval_required(stored.action.action_id)
+
     def _finish(self, result: DeviceResult, *, screenshot: bytes | None = None) -> DeviceResult:
         terminal, _new = self.state.record_terminal(
             result,
@@ -332,7 +407,15 @@ class MacAgent:
         stored = self.state.get_stored(action.action_id)
         if stored is None:
             return self._reject_without_storage(action.action_id, "action was not stored")
-        if stored.status in {"awaiting_approval", "approved", "running"}:
+        if stored.status == "awaiting_approval":
+            expired = self._expire_waiting(stored)
+            if expired is not None:
+                return expired
+            # Persisted awaiting state is also the retry outbox for the
+            # approval-required event.  Reporting is idempotent server-side.
+            self._report_approval_required(stored.action.action_id)
+            return stored.status
+        if stored.status in {"approved", "running"}:
             return stored.status
 
         claimed = self.state.claim_delivery(
@@ -350,15 +433,10 @@ class MacAgent:
                 claimed.action_id,
                 "awaiting_approval",
                 approval_deadline=deadline,
+                approval_boot_identity=self.boot_identity,
             )
             self.state.release_delivery(claimed.action_id)
-            self._report_event(
-                {
-                    "type": "approval_required",
-                    "action_id": claimed.action_id,
-                    "status": "awaiting_approval",
-                }
-            )
+            self._report_approval_required(claimed.action_id)
             return "awaiting_approval"
 
         return self._execute_stored(claimed, force=False)
@@ -390,16 +468,9 @@ class MacAgent:
         if stored.status != "awaiting_approval":
             return self._reject_without_storage(decision.action_id, "action is not awaiting approval")
 
-        deadline = stored.approval_deadline
-        if deadline is None or self.monotonic() >= deadline:
-            return self._finish(
-                DeviceResult(
-                    action_id=decision.action_id,
-                    status="expired",
-                    action="approval_expired",
-                    error="approval TTL expired",
-                )
-            )
+        expired = self._expire_waiting(stored)
+        if expired is not None:
+            return expired
         if not decision.approved:
             self.state.update_status(decision.action_id, "denied")
             return self._finish(
@@ -433,14 +504,24 @@ class MacAgent:
             return [response]
         return []
 
+    def _decisions_from_response(self, response: Any) -> list[Any]:
+        if not isinstance(response, Mapping):
+            return []
+        decisions = response.get("decisions")
+        if isinstance(decisions, list):
+            return decisions
+        decision = response.get("decision")
+        if isinstance(decision, Mapping):
+            return [decision]
+        return []
+
     def poll_once(self) -> bool:
         """Heartbeat and process one bounded cloud response."""
 
         try:
-            # GET keeps the polling request body-free and works with the
-            # localhost compatibility gateway.  Authentication is still
-            # separate from the frontend token via the bearer header.
-            response = self._request("GET", self.poll_url)
+            # Poll is an authenticated POST so the cloud can receive a
+            # heartbeat/device identity without placing identity in a URL.
+            response = self._request("POST", self.poll_url, {"device_id": self.device_id})
             self._failure_count = 0
         except Exception:
             self._failure_count += 1
@@ -455,6 +536,14 @@ class MacAgent:
                 # Invalid cloud directives are rejected locally and never
                 # reach the executor.  Do not log their payloads.
                 continue
+        for raw_decision in self._decisions_from_response(response):
+            try:
+                self.receive_decision(raw_decision)
+            except (TypeError, ValueError, KeyError):
+                continue
+        # Awaiting rows are a durable, retryable outbox for approval events and
+        # also provide the no-redelivery expiry check.
+        self._retry_waiting_approvals()
         return True
 
     def run_forever(self, stop_event: threading.Event | None = None) -> None:

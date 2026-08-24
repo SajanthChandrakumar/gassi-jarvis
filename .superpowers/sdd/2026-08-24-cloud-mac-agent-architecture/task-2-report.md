@@ -1,75 +1,128 @@
-# Task 2 report: add the outbound Mac agent
+# Task 2 read-only review
 
-## Outcome
+Scope: `87ee2120339ca9a2484e5e0166e884d8ddc9a5eb` through
+`a94507f5714b2f908f87e7cb11c9f107ae5d9634`.
 
-Implemented the standalone outbound Mac agent and its durable local state
-store. `app/device/agent.py` is a client-only process: it has no listener and
-connects to the cloud only through authenticated outbound requests. It uses
-stdlib `urllib` for HTTP and lazily imports the Mac executor, keeping the
-cloud-safe device contracts free of `app.security`, `app.vision`, and other
-Mac-only imports.
+## Verdicts
 
-## Safety and lifecycle behavior
+- **Spec verdict: FAIL.** The implementation is outbound-only and has the
+  requested URL/auth/backoff/lease/hash primitives, but the planned poll
+  contract and approval lifecycle are not complete.
+- **Quality verdict: NEEDS CHANGES.** The focused suite passes (`8 passed`),
+  but it does not cover the failing integration paths below and one test
+  explicitly locks in the GET contract mismatch.
 
-- Cloud URLs must use HTTPS; HTTP is accepted only for `localhost`,
-  `127.0.0.1`, or `::1` compatibility mode.
-- Every poll and result event uses a separate `Authorization: Bearer`
-  device token and includes the configured device identity.
-- Polling defaults to two seconds. Connection failures use bounded exponential
-  reconnect delays capped at 30 seconds.
-- Accepted payloads are persisted in SQLite with a SHA-256 payload hash.
-  Same-id substitutions raise an error, and delivery leases last 30 seconds.
-- Shell commands are classified again on the Mac. Dangerous, unknown,
-  metacharacter, sensitive-path, or tainted-context commands require approval
-  even when the cloud directive does not request it.
-- Approval decisions contain only an action ID and boolean decision. The agent
-  executes the locally stored payload, never data supplied in the approval.
-- Approval expiry uses the local monotonic clock and is 300 seconds. Expired
-  and denied approvals cannot execute.
-- Terminal results and replay tombstones are committed before reporting, so a
-  redelivery returns the stored result without executing again.
-- Screenshots are size bounded, relayed in memory when reported, and omitted
-  from SQLite and agent logs.
-- `main()` reads cloud URL, device token, device identity, state path, and the
-  required absolute existing `JARVIS_SHELL_CWD` from environment/CLI. It does
-  not start any inbound endpoint.
+## Findings
 
-## TDD and verification evidence
+1. **[P1] Poll method does not implement the public contract.**
+   `app/device/agent.py:436-444` calls `self._request("GET", self.poll_url)`.
+   The architecture plan's public contract is `POST
+   /api/device-agent/poll`; a POST-only Task 3 route will return 405 and the
+   agent will never receive work. `tests/test_device_agent.py:160-165`
+   asserts GET rather than detecting this mismatch.
 
-The focused state-machine tests were red before the implementation because
-`app.device.agent` did not exist:
+2. **[P1] Approval decisions cannot reach the running outbound agent.**
+   `app/device/agent.py:421-434` extracts only `actions`/`action` values, and
+   `app/device/agent.py:451-454` sends only those values to
+   `receive_action`. Although `receive_decision` exists at
+   `app/device/agent.py:366-415`, no poll response is parsed into it and no
+   other listener or outbound decision-poll exists. An action that enters
+   `awaiting_approval` at `app/device/agent.py:347-362` therefore has no
+   deployed path to receive the action-ID-only approval and execute its
+   stored payload. The Task 3 poll response contract must carry decisions (or
+   provide an equivalent authenticated outbound mechanism), and the agent
+   must process them.
+
+3. **[P1] Approval expiry is not enforced when no decision arrives.**
+   `app/device/agent.py:335-336` returns `awaiting_approval` immediately on
+   every redelivery. The 300-second monotonic deadline is checked only inside
+   `receive_decision` at `app/device/agent.py:393-402`. Once the deadline
+   passes, a redelivered action remains awaiting forever and no terminal
+   `expired` result is recorded or reported. Expiry must be checked before
+   the awaiting-status early return (and must be exercised by a redelivery
+   test).
+
+4. **[P2] Approval-required reporting is lossy.**
+   `_report_event` catches and drops all reporting errors at
+   `app/device/agent.py:192-210`. The only approval notification is emitted
+   at `app/device/agent.py:355-361`; subsequent deliveries hit the early
+   return at `app/device/agent.py:335-336` and do not retry it. A transient
+   cloud outage can therefore leave the cloud unaware that approval is
+   required, with no durable event/outbox to recover it. Terminal results do
+   get replay-reported, but approval-required events do not.
+
+5. **[P2] Persisted monotonic deadlines are unsafe across a reboot.**
+   The schema persists `approval_deadline` as a bare float at
+   `app/device/state.py:64-74`; the agent writes `time.monotonic() + 300` at
+   `app/device/agent.py:347-353` and later compares a fresh monotonic reading
+   at `app/device/agent.py:393-394`. If the OS monotonic origin resets across
+   a reboot while the SQLite file survives, an old approval can appear
+   unexpired and execute well beyond 300 seconds. Persist a boot/session
+   identity with the deadline, or invalidate pending approvals when the
+   monotonic epoch is not the same.
+
+## Verified strengths
+
+- `app/device/agent.py:41-64` enforces HTTPS except explicit loopback HTTP;
+  `app/device/agent.py:128-133` uses a dedicated bearer token and device
+  identity header.
+- `app/device/state.py:110-152` rejects same-ID payload substitutions and
+  `app/device/state.py:244-283` records terminal results/tombstones before
+  `_report_result` at `app/device/agent.py:224-230`.
+- `app/device/state.py:187-205` implements the 30-second delivery lease, and
+  `app/device/agent.py:445-449` bounds reconnect backoff at 30 seconds.
+- `app/device/agent.py:177-190` reclassifies shell commands locally and
+  fails closed on classifier errors. `main()` at
+  `app/device/agent.py:481-517` starts no listener.
+
+---
+
+# Implementer fix report
+
+## Review findings addressed
+
+1. Polling now sends `POST /api/device-agent/poll` with a minimal
+   `{"device_id": "..."}` heartbeat body and the separate device bearer.
+2. Poll responses use explicit `actions` and `decisions` arrays. Actions are
+   persisted and classified first; decisions contain only `action_id`,
+   `approved`, and optional reason and are passed to `receive_decision`.
+3. Awaiting approvals are checked for expiry on action redelivery and on
+   every poll, even when the cloud returns no action or decision. Expired
+   requests become terminal `expired` results and are reported.
+4. Awaiting approval state is a durable retry outbox. Every poll retries its
+   idempotent approval-required event until the cloud accepts it; transient
+   report errors do not lose the event.
+5. Approval deadlines now persist a boot identity. Linux uses
+   `/proc/sys/kernel/random/boot_id`, macOS uses `sysctl -n kern.boottime`, and
+   an unpredictable process identity is used as a fail-closed fallback. A
+   pending approval from another boot/session expires without execution.
+6. Existing SQLite state files are migrated with the new boot-identity column
+   without deleting or rewriting existing payloads.
+
+## TDD RED/GREEN evidence
+
+The review regression tests were added before the fix implementation and
+initially failed as expected:
 
 ```text
 GOOGLE_API_KEY=test-only-key /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python -m pytest -q tests/test_device_agent.py
-6 failed, 2 passed
-ModuleNotFoundError: No module named 'app.device.agent'
+6 failed, 7 passed
 ```
 
-After implementation and the state-store hardening:
+The failures covered the old GET poll method, unprocessed decisions, missing
+expiry on redelivery/poll, lossy approval reporting, and the missing injected
+boot identity.
+
+After the fix:
 
 ```text
-GOOGLE_API_KEY=test-only-key /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python -m pytest -q tests/test_device_agent.py
-8 passed
+GOOGLE_API_KEY=test-only-key /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python -m pytest -q tests/test_device_agent.py tests/test_device_boundary.py
+25 passed
 
 GOOGLE_API_KEY=test-only-key /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python -m pytest -q
-250 passed, 1 warning
+255 passed, 1 warning
 ```
 
-The one warning is the pre-existing Starlette deprecation warning from the
-installed `httpx` compatibility layer. Python bytecode compilation also
-passed for the new agent and state modules.
-
-## Scope and handoff concerns
-
-- This task changed only `app/device/agent.py`, `app/device/state.py`, its
-  focused tests, and this report. The untracked architecture plan was left
-  untouched.
-- The focused polling contract currently uses a body-free authenticated GET
-  to `/api/device-agent/poll`, matching the pre-written Task 2 test and
-  localhost compatibility intent. If the cloud route is implemented as the
-  plan's POST-only endpoint, Task 3 should either accept this GET heartbeat or
-  make the method an explicit shared contract before integration.
-- Cloud-side event durability, offline status, frontend routing, launchd
-  installation, Docker packaging, and deployment remain for later tasks.
-- No launch agent was loaded, no process was deployed, and no secrets were
-  added.
+The warning remains the pre-existing Starlette deprecation warning for the
+installed `httpx` compatibility layer. No Task 3 routes, `main.py`, frontend,
+deployment, or trading files were changed.

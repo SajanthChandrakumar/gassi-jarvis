@@ -163,7 +163,8 @@ def test_poll_request_uses_device_bearer_and_two_second_default(tmp_path):
     agent.poll_once()
 
     assert agent.poll_interval == 2.0
-    assert requests[0][0] == "GET"
+    assert requests[0][0] == "POST"
+    assert requests[0][3] == {"device_id": "local-mac"}
     assert requests[0][2]["Authorization"] == "Bearer device-secret"
 
 
@@ -185,3 +186,131 @@ def test_agent_backoff_is_bounded(tmp_path):
     assert sleeps
     assert max(sleeps) <= 30.0
     assert sleeps == sorted(sleeps)
+
+
+def test_poll_processes_action_id_only_decisions(tmp_path):
+    from app.device.agent import MacAgent
+
+    executor = FakeExecutor(threat_level=2)
+
+    def transport(method, url, headers, body=None):
+        return {
+            "actions": [_action(command="rm -rf /tmp/nope").model_dump(mode="json")],
+            "decisions": [{"action_id": "a-1", "approved": True}],
+        }
+
+    agent = MacAgent(
+        "https://jarvis.example.test",
+        "device-secret",
+        state_path=tmp_path / "agent.sqlite3",
+        executor=executor,
+        transport=transport,
+    )
+
+    agent.poll_once()
+
+    assert executor.calls == [("shell_command", "rm -rf /tmp/nope", True)]
+
+
+def test_redelivery_expires_waiting_approval_without_a_decision(tmp_path):
+    from app.device.agent import MacAgent
+
+    clock = FakeClock()
+    executor = FakeExecutor(threat_level=2)
+    agent = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=tmp_path / "agent.sqlite3",
+        executor=executor,
+        monotonic=clock.monotonic,
+    )
+    action = _action(command="rm -rf /")
+
+    assert agent.receive_action(action) == "awaiting_approval"
+    clock.advance(300.001)
+
+    result = agent.receive_action(action)
+
+    assert result.status == "expired"
+    assert agent.state.get_result("a-1").status == "expired"
+    assert executor.calls == []
+
+
+def test_poll_expires_waiting_approval_even_without_redelivery(tmp_path):
+    from app.device.agent import MacAgent
+
+    clock = FakeClock()
+    executor = FakeExecutor(threat_level=2)
+    agent = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=tmp_path / "agent.sqlite3",
+        executor=executor,
+        monotonic=clock.monotonic,
+        transport=lambda *args, **kwargs: {"actions": [], "decisions": []},
+    )
+    agent.receive_action(_action(command="rm -rf /"))
+    clock.advance(300.001)
+
+    agent.poll_once()
+
+    assert agent.state.get_result("a-1").status == "expired"
+    assert executor.calls == []
+
+
+def test_approval_required_event_is_retried_from_persisted_waiting_state(tmp_path):
+    from app.device.agent import MacAgent
+
+    attempts: list[dict] = []
+
+    def report(event):
+        attempts.append(event)
+        if len(attempts) == 1:
+            raise OSError("cloud temporarily unavailable")
+
+    agent = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=tmp_path / "agent.sqlite3",
+        executor=FakeExecutor(threat_level=2),
+        report=report,
+        transport=lambda *args, **kwargs: {"actions": [], "decisions": []},
+    )
+    agent.receive_action(_action(command="rm -rf /"))
+    assert len(attempts) == 1
+
+    agent.poll_once()
+
+    assert len(attempts) == 2
+    assert attempts[0]["type"] == attempts[1]["type"] == "approval_required"
+
+
+def test_persisted_approval_from_another_boot_fails_closed(tmp_path):
+    from app.device.agent import MacAgent
+
+    clock = FakeClock()
+    path = tmp_path / "agent.sqlite3"
+    first = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=path,
+        executor=FakeExecutor(threat_level=2),
+        monotonic=clock.monotonic,
+        boot_identity="boot-a",
+    )
+    first.receive_action(_action(command="rm -rf /"))
+
+    second_executor = FakeExecutor(threat_level=2)
+    second = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=path,
+        executor=second_executor,
+        monotonic=clock.monotonic,
+        boot_identity="boot-b",
+    )
+
+    result = second.receive_decision({"action_id": "a-1", "approved": True})
+
+    assert result.status == "expired"
+    assert second_executor.calls == []
