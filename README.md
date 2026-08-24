@@ -1,296 +1,181 @@
 # Gassi-Jarvis
 
-> A self-hosted, voice-controlled AI assistant for macOS that turns your phone into a remote brain for your laptop. Speaks back, sees the screen, runs commands — gated by a Human-in-the-Loop security layer.
+Gassi-Jarvis is a self-hosted, voice-first assistant and deterministic
+financial-research workspace. The installable vanilla PWA talks to FastAPI;
+macOS control is performed by one outbound-only Mac agent. Shell commands and
+calendar writes remain Human-in-the-Loop (HitL) gated.
 
-> **Live demo:** none — this project controls a personal Mac, so there's no shared instance to try. Screenshot below; clone and run it locally to try it yourself.
+![Jarvis research workspace](docs/jarvis-pwa.png)
 
-![Gassi-Jarvis PWA describing the user's browser screen in German](docs/jarvis-pwa.png)
+## Architecture at a glance
 
-*Above: the PWA after asking Jarvis to look at the screen. Vision tool fires `screencapture`, Gemini Vision returns a German description, Edge-TTS speaks it back.*
-
----
-
-## Motivation
-
-I take my dog for a 45-minute walk every day. That's three hours a week of unstructured time where I have a phone in my pocket and a laptop sitting unused at home. I wanted a way to keep working through that time — to think out loud, pull up notes, kick off scripts, check on running processes — without staring at a small screen. Existing voice assistants are a chat box; I wanted an *agent* with a real keyboard behind it. So I built one.
-
-Gassi-Jarvis is the result: a Large Action Model that lives on my Mac, exposes itself to my phone over a private tunnel, and uses the LLM as both conversationalist and command translator.
-
----
-
-## What It Does
-
-- **Talks back.** Voice input from the browser; Edge-TTS for natural-sounding voice output (German default, configurable).
-- **Holds context.** Multi-turn conversations with in-memory session state and a persistent ChromaDB vector store for long-term memory.
-- **Sees the screen.** Takes silent macOS screenshots and feeds them to Gemini Vision for visual Q&A.
-- **Knows what's current.** Google Search grounding for live facts — weather, news, prices — while still answering static questions from the model directly.
-- **Runs commands — safely.** A layered security router classifies every shell command. Dangerous commands route through a Human-in-the-Loop voice approval flow before executing.
-- **Knows your calendar.** Reads your Google Calendar ("Was steht heute an?") and creates events by voice — every new event is confirmed via the same HitL flow before it's written.
-- **Reaches your phone.** FastAPI backend behind ngrok/Tailscale + bearer-token auth, so the assistant follows you anywhere.
-
----
-
-## Scope & Security Model
-
-Gassi-Jarvis is a **single-user, self-hosted** assistant. The backend runs on the user's own machine and controls only that machine — no remote-viewing capability, no third-party telemetry, and no cloud component beyond the explicit LLM call to Google Gemini.
-
-Security is layered, with each layer designed to fail closed:
-
-- **Authentication & transport** — bearer-token auth, rate limiting, and CORS scoping for any non-localhost traffic.
-- **Command classification** — every shell command the LLM proposes is parsed and risk-rated before it can run.
-- **Human-in-the-Loop** — anything not classified as clearly safe requires explicit voice approval in the next turn.
-- **Secret hygiene** — credentials and the long-term memory store live outside the repo and are excluded from container builds.
-
-Concrete configuration lives in [`security.py`](app/security.py); the full threat model is in [SECURITY.md](SECURITY.md) and the design rationale in [architecture.md](architecture.md).
-
----
-
-## Architecture
-
-```
-phone PWA  ──(ngrok / Tailscale, HTTPS)──>  FastAPI gateway (main.py)
-                                                  |
-            ┌─────────────────────────┬───────────┴────────────┐
-            v                         v                        v
-       agent.py                  memory.py                security.py / vision.py
-       (Gemini LLM,              (Sessions +              (Sandboxed shell exec
-        tool decls,               ChromaDB RAG)            + macOS screen capture)
-        intent classifier)
-                                                                |
-                                                                v
-                                                          macOS shell
+```text
+Frontend / PWA
+  └─ HTTPS + JARVIS_API_TOKEN ──> Cloud FastAPI
+                                  ├─ Gemini, sessions, ChromaDB memory
+                                  ├─ Google Calendar (separate HitL path)
+                                  ├─ deterministic read-only research
+                                  └─ SQLite device-intent queue
+                                      ▲ HTTPS + JARVIS_DEVICE_TOKEN
+                                      │ outbound POST poll/events only
+                                  Mac agent (launchd)
+                                  └─ local classifier, shell, AppleScript,
+                                     screenshots, device SQLite state
 ```
 
-| Module | Responsibility |
-|---|---|
-| [`main.py`](app/main.py) | FastAPI gateway, auth, CORS, rate limit, HitL interceptor, tool dispatch |
-| [`models.py`](app/models.py) | Pydantic v2 request/response contracts |
-| [`agent.py`](app/agent.py) | Google Gemini integration, tool declarations, intent classifier |
-| [`memory.py`](app/memory.py) | Session state + ChromaDB long-term memory |
-| [`security.py`](app/security.py) | Command threat classification + sandboxed execution |
-| [`vision.py`](app/vision.py) | Silent screenshot capture + JPEG compression |
-| [`logging_config.py`](app/logging_config.py) | Centralized logging with `JARVIS_LOG_LEVEL` env toggle |
+These are three trust zones, not three public services:
 
----
+1. The frontend is an untrusted display/client. It knows only the frontend
+   bearer and never calls the Mac agent or receives the device bearer.
+2. The cloud is the always-on orchestration zone. It owns Gemini, memory,
+   Calendar, research, and the durable single-device queue, but imports no
+   local shell, AppleScript, screenshot, or launchd implementation.
+3. The Mac agent is the local capability zone. It makes outbound requests,
+   stores accepted payloads locally, reclassifies shell commands, executes
+   macOS actions, and reports typed results. It starts no listener.
 
-## Tech Stack
+The frontend has no frontend-to-agent path. See
+[`architecture.md`](architecture.md) for contracts and lifecycle details and
+[`SECURITY.md`](SECURITY.md) for the threat model.
 
-- **Backend:** Python 3.13, FastAPI, Uvicorn, Pydantic v2
-- **LLM:** Google Gemini 2.5 Flash via `google-genai` SDK
-- **Voice:** Microsoft Edge-TTS (German)
-- **Memory:** ChromaDB (persistent vector store)
-- **Frontend:** Installable PWA (web manifest + service worker), vanilla HTML/JS, no framework
-- **Security:** SlowAPI rate limiting, FastAPI CORS, bearer-token auth
-- **Remote access:** ngrok or Tailscale
-- **Target platform:** macOS (Apple Silicon)
+## What is cloud-safe
 
----
+The cloud can serve chat, voice/TTS, session and ChromaDB memory, Google
+Calendar, and the bounded financial-research endpoints while the Mac is
+offline. Research is read-only and deterministic: Gemini may present results,
+but does not calculate authoritative values, fill missing data, recommend
+trades, or place orders. A future portfolio module remains cloud-side, but is
+not implemented. The existing research contracts are documented in
+[`docs/natural-language-quant-research.md`](docs/natural-language-quant-research.md)
+and [`docs/trading-financial-contract.md`](docs/trading-financial-contract.md).
 
-## Setup
+## Run locally
 
-### 1. Prerequisites
+Use Python 3.13 and a compatible virtual environment. For tests and imports,
+set a non-secret dummy `GOOGLE_API_KEY` if no Gemini key is available.
 
 ```bash
-brew install python@3.13
-```
-
-### 2. Install
-
-```bash
-git clone https://github.com/<your-username>/gassi-jarvis.git
-cd gassi-jarvis
-
-python3.13 -m venv venv
-source venv/bin/activate
-
-pip install --upgrade pip
+python3.13 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+export GOOGLE_API_KEY=your_gemini_key
+export JARVIS_API_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
+uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-### 3. Configure
+For migration testing, `scripts/run_local_compat.py` starts cloud FastAPI and
+the outbound agent together on loopback. It requires an existing absolute
+`JARVIS_SHELL_CWD` and `JARVIS_DEVICE_TOKEN`; it does not install or load
+launchd.
 
-Create a `.env` in the project root:
+## Cloud and Mac deployment
 
-```ini
-# LLM
-GOOGLE_API_KEY=your_gemini_key
-
-# Required for any non-localhost access.
-# Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
-JARVIS_API_TOKEN=your_long_random_secret
-
-# CORS origins (comma-separated). Defaults to localhost.
-JARVIS_ALLOWED_ORIGINS=https://your-tunnel.ngrok-free.dev
-
-# Optional
-JARVIS_LOG_LEVEL=INFO            # DEBUG | INFO | WARNING | ERROR
-JARVIS_SHELL_CWD=/path/to/sandbox
-JARVIS_BRAIN_DIR=/path/to/chromadb
-JARVIS_SESSIONS_FILE=/path/to/jarvis_sessions.json
-```
-
-### 4. Run
+The supported split deployment keeps the cloud port bound to localhost and
+uses external, mode-0600 environment files:
 
 ```bash
-uvicorn app.main:app --host 127.0.0.1 --port 8000 --forwarded-allow-ips '*'
+mkdir -p ~/.config/jarvis
+cp deploy/cloud.env.example ~/.config/jarvis/cloud.env
+chmod 600 ~/.config/jarvis/cloud.env
+JARVIS_CLOUD_ENV_FILE="$HOME/.config/jarvis/cloud.env" \
+  docker compose -f compose.yaml up --build
 ```
 
-Open `http://localhost:8000` for the PWA, or `http://localhost:8000/docs` for the Swagger UI.
+Expose the cloud through Tailscale Serve or another private HTTPS tunnel. The
+Mac LaunchAgent assets are committed but opt-in; review them and grant the
+agent's Python host macOS **Screen Recording** and **Automation** permissions
+before loading the user LaunchAgent. No deployment or LaunchAgent load is
+performed by repository tests. The full runbook is
+[`docs/deployment.md`](docs/deployment.md).
 
-`--forwarded-allow-ips` lets the app trust the `X-Forwarded-For` header from your tunnel, so per-client rate limiting keys on the real phone/IP instead of the tunnel's localhost peer.
+## Configuration
 
-### 5. Google Calendar (optional)
+Keep secrets outside the repository, Compose file, plist, frontend, and image.
 
-Jarvis can read your calendar and (after voice confirmation) create events.
-One-time setup:
+| Variable | Owner / meaning |
+|---|---|
+| `GOOGLE_API_KEY` | Cloud Gemini credential. |
+| `JARVIS_API_TOKEN` | Frontend/user bearer for `/api/*`; unset means localhost-only for local development. |
+| `JARVIS_DEVICE_TOKEN` | Separate Mac-agent bearer for `/api/device-agent/*`; never use it in the PWA. |
+| `JARVIS_DEVICE_ID` | Configured single device identity; defaults to `local-mac`. |
+| `JARVIS_ALLOWED_ORIGINS` | Comma-separated browser origins allowed by CORS. |
+| `JARVIS_FRONTEND_API_BASE_URL` | Optional HTTP(S) API origin emitted by `/config.js`; empty/root path only, never `/api`. |
+| `JARVIS_CLOUD_API_BASE_URL` | Mac agent's cloud origin; HTTPS is required except explicit loopback HTTP. |
+| `JARVIS_CLOUD_DB_PATH` | Cloud queue SQLite path. Compose sets `/data/device/jarvis_cloud.sqlite3`. |
+| `JARVIS_DEVICE_AGENT_STATE_PATH` | Mac agent's local SQLite state path. |
+| `JARVIS_SHELL_CWD` | Existing absolute sandbox directory required by the Mac agent. |
+| `JARVIS_BRAIN_DIR`, `JARVIS_SESSIONS_FILE` | Cloud ChromaDB and session persistence paths. |
+| `JARVIS_LOG_LEVEL` | Cloud log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). |
+| `JARVIS_GCAL_CREDENTIALS`, `JARVIS_GCAL_TOKEN` | Optional cloud Calendar OAuth file paths. |
+| `JARVIS_AGENT_PROJECT_DIR`, `JARVIS_AGENT_PYTHON` | Launchd wrapper project and Python paths. |
 
-1. In the [Google Cloud Console](https://console.cloud.google.com/) (same project as your Gemini key is fine): **APIs & Services → Enable APIs → Google Calendar API**.
-2. **Credentials → Create Credentials → OAuth client ID → Desktop app**, download the JSON and save it as `gcal_credentials.json` in the project root.
-3. Run the one-time browser login:
-   ```bash
-   python -m app.gcal
-   ```
-   The token lands in `gcal_token.json` (both files are gitignored; paths overridable via `JARVIS_GCAL_CREDENTIALS` / `JARVIS_GCAL_TOKEN`).
+Optional OpenBB provider credentials (`FMP_API_KEY`, `TIINGO_TOKEN`,
+`FRED_API_KEY`) affect research coverage only; unavailable providers are
+reported as unavailable rather than replaced with invented values.
 
-Scope is `calendar.events` only (least privilege — no calendar management). Without this setup, calendar questions get a friendly hint instead of an error.
+## Device lifecycle and API
 
-### 6. Reach it from your phone
+Frontend routes use `Authorization: Bearer <JARVIS_API_TOKEN>`:
 
-Either:
+- `GET /api/device/status`
+- `GET /api/device/actions/{action_id}`
+- `POST /api/device/actions/{action_id}/decision`
+- `POST /api/chat`, `/api/research/run`, and the read-only research/memory routes
 
-- **ngrok** — quick:
-  ```bash
-  ngrok http 8000
-  ```
-  Visit the printed `https://*.ngrok-free.dev` URL on your phone; the PWA prompts for the token once and caches it for 12 hours.
+Agent routes use `Authorization: Bearer <JARVIS_DEVICE_TOKEN>` plus the
+configured `X-Jarvis-Device-ID`:
 
-- **Tailscale** — safer:
-  Install Tailscale on Mac + phone with the same account. Point your phone at `http://<mac-tailscale-ip>:8000`. The Mac never opens a port to the public internet.
+- `POST /api/device-agent/poll` — heartbeat and bounded action/decision batch
+- `POST /api/device-agent/actions/{action_id}/events` — approval/result events
 
----
+The agent polls every two seconds. The cloud marks it offline after ten
+seconds without a heartbeat and rejects new device work immediately with a
+structured unavailable result. Delivered actions have a 30-second lease;
+approval has a local monotonic 300-second TTL. The action ID and payload hash
+are idempotency keys. The Mac records terminal results before reporting them,
+keeps replay tombstones, and never executes a redelivered or substituted
+payload. Approvals carry only an action ID; the agent executes its stored
+payload after local reclassification and approval.
+
+Screenshot bytes are bounded to 10 MiB, decoded and analyzed in memory, and
+are not written to either SQLite database or logs. The cloud's vision callback
+receives only that in-memory byte buffer.
+
+The cloud is an approval relay and durable coordinator, not the local safety
+authority. A cloud compromise can enqueue work and decide queued approvals,
+so the cloud token, queue, and Gemini orchestration remain part of the trust
+base. The Mac agent still owns shell classification and fails closed for
+dangerous, unknown, sensitive, metacharacter, or tainted commands; it also
+rejects mismatched device identities and replay/substitution attempts.
+
+## Calendar and financial boundaries
+
+Calendar stays cloud-side. Reads are cloud API calls; event creation keeps its
+separate approval flow and is not a Mac device action. Financial research is
+bounded, read-only, provenance-preserving, and explicit about missing,
+unsupported, stale, and failed data. Portfolio state, trading execution,
+recommendations, and portfolio APIs are not implemented.
 
 ## Tests
 
 ```bash
-pip install -r requirements-dev.txt
-python -m pytest tests/ -v
+GOOGLE_API_KEY=test-only-key .venv/bin/python -m pytest -q
+node --check app/static/app.js
+/usr/bin/plutil -lint deploy/launchd/com.gassi.jarvis.mac-agent.plist
+sh -n deploy/launchd/install.sh deploy/launchd/run-mac-agent.sh
 ```
 
-The suite covers the security router: threat classification, shell-metachar detection, sensitive-path read blocking, `find` argument inspection, and the execution gate.
-
----
-
-## API Contract
-
-`POST /api/chat`
-
-Headers:
-```
-Authorization: Bearer <JARVIS_API_TOKEN>
-Content-Type: application/json
-```
-
-Request:
-```json
-{
-  "session_id": "voice_walk_01",
-  "timestamp": "2026-05-22T20:00:00Z",
-  "payload": {
-    "type": "text",
-    "content": "Jarvis, mach mal einen Screenshot und schau dir den Code an."
-  }
-}
-```
-
-Response:
-```json
-{
-  "status": "success",
-  "jarvis_response": "Habe ich. Der Fehler liegt in Zeile 42 …",
-  "audio_base64": "UklGRig…",
-  "action_taken": "vision_screenshot_analyzed"
-}
-```
-
-`GET /api/memories/recent`
-
-Lightweight, LLM-free endpoint for external dashboards (e.g. a
-[Homepage](https://gethomepage.dev) Custom API widget) to poll recently
-saved facts without triggering a Gemini call — same bearer-token auth as
-`/api/chat`, own rate limit (10/min).
-
-```json
-{
-  "memories": [
-    {"text": "Sajanth mag Kaffee ohne Zucker", "timestamp": "2026-07-11T22:43:43.958518"}
-  ]
-}
-```
-
----
-
-## Optional: Homepage Boot-Dashboard
-
-Gassi-Jarvis is meant to be used throughout the day, not just on walks — so
-rather than building a dashboard screen into the chat PWA, the recommended
-setup pairs Jarvis with [Homepage](https://gethomepage.dev) as a separate
-landing page: native widgets for weather (Open-Meteo), calendar (Google
-Calendar's *secret* iCal address — not the public one), Mac resource/Docker
-status, and search — all without touching Jarvis's backend. The **only**
-call Jarvis's backend makes for this dashboard is serving
-`/api/memories/recent` to Homepage's Custom API widget, polled every ~10
-minutes. Everything else Homepage fetches directly on its own.
-
-```yaml
-# Custom API widget pointing at Jarvis
-widget:
-  type: customapi
-  url: http://<mac-tailscale-ip>:8000/api/memories/recent
-  method: GET
-  refreshInterval: 600000 # 10 minutes — memories rarely change
-  headers:
-    Authorization: Bearer ${JARVIS_API_TOKEN}
-  display: dynamic-list
-  mappings:
-    - field: memories
-      label: Zuletzt gemerkt
-```
-
-Bookmark Homepage as your phone's home screen; a tile on it links into the
-Jarvis PWA for actual conversations.
-
----
-
-## Roadmap
-
-- [x] FastAPI gateway with strict Pydantic validation
-- [x] Gemini integration with in-memory multi-turn sessions
-- [x] Edge-TTS voice output, browser STT input
-- [x] Persistent long-term memory via ChromaDB RAG
-- [x] Layered HitL security router for macOS execution
-- [x] Multimodal vision (screenshots + Gemini Vision)
-- [x] Bearer-token auth, rate limit, CORS, structured logging
-- [x] Frontend Kill-Switch via AbortController for instant audio interrupts
-- [x] Token TTL (12h) on the PWA
-- [x] Conversation transcript UI with inline Human-in-the-Loop approval cards
-- [x] Installable PWA (web manifest, maskable icons, service worker)
-- [x] Google Calendar: voice read access + HitL-gated event creation
-- [x] Live web knowledge via Google Search grounding (read-only)
-- [x] Disk-persistent sessions (history + pending HitL command survive restarts)
-- [x] Indirect-injection guard: shell commands after screenshot/web/recall are forced through HitL
-- [x] Pending-command TTL and per-client rate limiting behind the tunnel
-- [x] LLM-free `/api/memories/recent` endpoint for external dashboards (Homepage integration)
-- [ ] Local wake-word detection (Porcupine / Picovoice)
-- [ ] WebSocket audio streaming for sub-second turn-taking
-- [ ] Apple Watch companion for wrist-first, hands-free walks
-
----
+Tests are credential-free and do not require a live Mac, provider network,
+Docker daemon, or LaunchAgent. When Docker is unavailable, image validation is
+limited to static Dockerfile/Compose/context checks; do not infer deployment
+success.
 
 ## Disclaimer
 
-This is a personal research project and not a production-hardened product. It executes shell commands on the host machine driven by an LLM; misconfiguration (weak token, exposed port, missing CORS) could be exploited. Use it on your own machine, with a strong token, behind a tunnel — and read [`security.py`](app/security.py) before you trust it with anything.
-
----
+This is a personal research project, not a production-hardened product. Keep
+both bearer tokens long and private, prefer a private HTTPS tunnel, restrict
+`JARVIS_SHELL_CWD` to a scratch directory, and read [`SECURITY.md`](SECURITY.md)
+before exposing the cloud.
 
 ## License
 
