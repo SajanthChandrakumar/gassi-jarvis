@@ -9,8 +9,9 @@ network, provider credentials, live macOS control, or screenshot persistence.
 
 One implementation defect was exposed and fixed: `ActionPayload.payload` had a
 default empty string, so a malformed agent directive could validate locally.
-It now requires a non-empty string (`Field(..., min_length=1)`). Unknown action
-types were already rejected by the typed `ActionType` contract and cloud queue.
+It now rejects empty and whitespace-only strings while preserving valid payload
+bytes exactly for hashing and execution. Unknown action types were already
+rejected by the typed `ActionType` contract and cloud queue.
 
 ## Coverage matrix
 
@@ -26,7 +27,7 @@ types were already rejected by the typed `ActionType` contract and cloud queue.
 | Screenshot bytes are bounded and excluded from local/cloud SQLite and logs | `test_screenshot_bytes_are_bounded_and_not_stored_by_local_agent`; `test_cloud_screenshot_event_rejects_oversized_encoded_payload`; existing cloud screenshot idempotency test |
 | Same-origin default and configured cross-origin frontend requests join safely | `test_frontend_api_url_joins_same_origin_and_configured_cross_origin_at_runtime`; existing `/config.js` and Node normalization tests |
 | Cloud main imports/starts with Mac-only modules blocked | `test_cloud_main_import_and_start_do_not_require_mac_modules`; existing contract import boundary |
-| Research endpoints preserve offline/provider status and deterministic provenance | `test_research_endpoints_report_offline_provider_state_and_preserve_provenance`; existing trading canonical/provenance suite |
+| Research endpoints preserve offline/provider status and deterministic provenance | `test_research_endpoints_use_real_dispatch_serialization_and_preserve_provenance`; existing trading canonical/provenance suite |
 | Localhost two-process behavior works through authenticated poll/event transport | `test_localhost_two_process_transport_executes_one_queued_action` |
 
 ## TDD evidence
@@ -70,6 +71,51 @@ git diff --check
 ```
 
 The warning is the pre-existing Starlette/httpx compatibility deprecation.
+
+## Fix round 1
+
+The reviewer follow-up added RED proofs for blank payloads, real research
+dispatch/serialization, the 299.999/300.000-second TTL boundary, executor
+history for denied/substituted/completed actions, authoritative shell
+classification for tainted approval, positive frontend status auth, cloud
+screenshot log secrecy, and interpreter portability. The first run of those
+new proofs was:
+
+```text
+3 failed, 15 passed, 1 warning
+```
+
+The minimal fixes were:
+
+- validate payload content with a Pydantic validator but never strip or rewrite
+  the stored/hash input;
+- always run the local shell classifier before applying explicit/tainted HITL
+  requirements;
+- use `sys.executable` for the blocked-Mac import/start subprocess;
+- route the research endpoint test through real `JarvisResearchTools`,
+  `ResearchOrchestrator`, canonical serialization, and deterministic offline
+  fixture data, while checking concrete provider configuration states.
+
+Fix-round verification:
+
+```text
+GOOGLE_API_KEY=test-only-key PYTHONPATH=. \
+  /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/pytest -q \
+  tests/test_task6_security.py
+18 passed, 1 warning
+
+GOOGLE_API_KEY=test-only-key PYTHONPATH=. \
+  /Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/pytest -q
+311 passed, 1 warning in 5.98s
+
+node --check app/static/app.js
+git diff --check
+```
+
+The localhost proof remains an in-process FastAPI `TestClient` transport, not
+a real TCP two-process test; it still exercises authenticated poll/event route
+behavior with separate cloud and agent SQLite state. No Obsidian note was
+changed during this fix round.
 
 ## Gaps and concerns
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,7 +183,47 @@ def test_routes_reject_unknown_event_kinds_and_malformed_payloads(tmp_path, monk
     with pytest.raises(ValueError, match="unsupported device action type"):
         gateway.queue_action("not-a-device-action", "echo hi")
     with pytest.raises(ValueError, match="non-empty"):
-        gateway.queue_action("shell_command", " ")
+        gateway.queue_action("shell_command", " \t\n")
+
+
+def test_payloads_reject_whitespace_without_normalizing_valid_flattened_actions():
+    from app.device.models import ActionPayload, DeviceAction
+    from app.device.state import hash_payload
+
+    with pytest.raises(ValidationError):
+        ActionPayload(action_type="shell_command", payload=" \t\n")
+    with pytest.raises(ValidationError):
+        DeviceAction.model_validate({"action_id": "raw-blank", "payload": " \t\n"})
+
+    for action_type, payload in (
+        ("shell_command", " echo preserved "),
+        ("open_app", "Safari"),
+        ("take_screenshot", "inspect"),
+    ):
+        action = DeviceAction.model_validate(
+            {
+                "action_id": f"flattened-{action_type}",
+                "action_type": action_type,
+                "payload": payload,
+            }
+        )
+        assert action.command == payload
+        assert hash_payload(action.payload) == hash_payload(
+            ActionPayload(action_type=action_type, payload=payload)
+        )
+
+
+def test_frontend_token_can_read_device_status(tmp_path, monkeypatch):
+    client, gateway = _device_client(tmp_path, monkeypatch)
+
+    response = client.get(
+        "/api/device/status",
+        headers={"Authorization": "Bearer frontend-secret"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["device_id"] == gateway.device_id
+    assert response.json()["available"] is False
 
 
 def test_local_agent_requires_hitl_for_dangerous_unknown_sensitive_metachar_and_tainted_shell(tmp_path):
@@ -259,7 +302,7 @@ def test_local_agent_rejects_unknown_action_kind_and_missing_payload(tmp_path):
         )
 
 
-def test_local_approval_expires_at_exactly_300_seconds(tmp_path):
+def test_local_approval_succeeds_just_before_and_expires_exactly_at_300_seconds(tmp_path):
     from app.device.agent import MacAgent
     from app.device.models import ActionPayload, DeviceAction
 
@@ -280,16 +323,29 @@ def test_local_approval_expires_at_exactly_300_seconds(tmp_path):
     )
     agent.receive_action(
         DeviceAction(
-            action_id="ttl-300",
+            action_id="ttl-299999",
             payload=ActionPayload(action_type="shell_command", payload="rm -rf /"),
+        )
+    )
+    clock.advance(299.999)
+
+    before_expiry = agent.receive_decision({"action_id": "ttl-299999", "approved": True})
+
+    assert before_expiry.status == "succeeded"
+    assert calls == [("rm -rf /", True)]
+
+    agent.receive_action(
+        DeviceAction(
+            action_id="ttl-300",
+            payload=ActionPayload(action_type="shell_command", payload="rm -rf /tmp/exact"),
         )
     )
     clock.advance(300.0)
 
-    result = agent.receive_decision({"action_id": "ttl-300", "approved": True})
+    at_expiry = agent.receive_decision({"action_id": "ttl-300", "approved": True})
 
-    assert result.status == "expired"
-    assert calls == []
+    assert at_expiry.status == "expired"
+    assert calls == [("rm -rf /", True)]
 
 
 def test_denied_and_substituted_actions_cannot_execute_and_completed_replay_is_safe(tmp_path):
@@ -316,6 +372,7 @@ def test_denied_and_substituted_actions_cannot_execute_and_completed_replay_is_s
     assert agent.receive_action(dangerous) == "awaiting_approval"
     assert agent.receive_decision({"action_id": "denied", "approved": False}).status == "rejected"
     assert agent.receive_decision({"action_id": "denied", "approved": True}).status == "rejected"
+    assert calls == []
 
     substitute = dangerous.model_copy(
         update={
@@ -332,6 +389,7 @@ def test_denied_and_substituted_actions_cannot_execute_and_completed_replay_is_s
     with pytest.raises(ValueError, match="payload hash"):
         agent.receive_action(substitute)
     assert agent.receive_decision({"action_id": "substituted", "approved": True}).status == "succeeded"
+    assert calls == [("rm -rf /tmp/original", True)]
 
     completed = DeviceAction(
         action_id="completed",
@@ -351,6 +409,51 @@ def test_denied_and_substituted_actions_cannot_execute_and_completed_replay_is_s
     assert safe_agent.receive_action(completed).status == "succeeded"
     assert safe_agent.receive_action(completed).status == "succeeded"
     assert [command for command, _force in calls].count("echo once") == 1
+
+
+def test_tainted_approval_uses_authoritative_classifier_and_forced_executor(monkeypatch, tmp_path):
+    import app.device.executor as executor_module
+    from app.device.agent import MacAgent
+    from app.device.models import ActionPayload, DeviceAction
+
+    classify = executor_module.evaluate_security_level
+    seen_classifications = []
+
+    def classify_with_trace(command):
+        seen_classifications.append(command)
+        return classify(command)
+
+    execute_calls = []
+
+    def execute_with_trace(command, *, force=False):
+        execute_calls.append((command, force))
+        return "approved execution"
+
+    monkeypatch.setattr(executor_module, "evaluate_security_level", classify_with_trace)
+    monkeypatch.setattr(executor_module, "_execute_shell_command", execute_with_trace)
+
+    agent = MacAgent(
+        "http://127.0.0.1:8000",
+        "device-secret",
+        state_path=tmp_path / "tainted-approval.sqlite3",
+        executor=executor_module.MacExecutor(),
+        report=lambda _event: None,
+    )
+    action = DeviceAction(
+        action_id="tainted-approval",
+        payload=ActionPayload(
+            action_type="shell_command",
+            payload="echo trusted",
+            tainted=True,
+        ),
+    )
+
+    assert agent.receive_action(action) == "awaiting_approval"
+    result = agent.receive_decision({"action_id": action.action_id, "approved": True})
+
+    assert result.status == "succeeded"
+    assert seen_classifications == ["echo trusted"]
+    assert execute_calls == [("echo trusted", True)]
 
 
 def test_screenshot_bytes_are_bounded_and_not_stored_by_local_agent(tmp_path, monkeypatch, caplog):
@@ -430,6 +533,35 @@ def test_cloud_screenshot_event_rejects_oversized_encoded_payload(tmp_path, monk
         )
 
 
+def test_cloud_screenshot_result_does_not_log_bytes_or_base64(tmp_path, monkeypatch, caplog):
+    from app.device.cloud import DeviceGateway
+
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
+    image = b"cloud-jpeg"
+    encoded = base64.b64encode(image).decode("ascii")
+    gateway = DeviceGateway(
+        tmp_path / "cloud-logs.sqlite3",
+        device_id="mac-1",
+        vision_analyzer=lambda _prompt, _image: "analysis only",
+    )
+    gateway.heartbeat("mac-1")
+    gateway.queue_action("take_screenshot", "inspect", action_id="screen-log")
+    gateway.poll("mac-1")
+
+    gateway.record_event(
+        "screen-log",
+        "device-secret",
+        {
+            "type": "result",
+            "result": {"action_id": "screen-log", "status": "succeeded"},
+            "screenshot_b64": encoded,
+        },
+    )
+
+    assert image.decode("ascii") not in caplog.text
+    assert encoded not in caplog.text
+
+
 def test_frontend_api_url_joins_same_origin_and_configured_cross_origin_at_runtime():
     source_path = ROOT / "app/static/app.js"
     script = r"""
@@ -460,8 +592,6 @@ if (invalid.API_BASE_URL !== '' || invalid.apiUrl('/api/chat') !== '/api/chat') 
 
 
 def test_cloud_main_import_and_start_do_not_require_mac_modules(tmp_path):
-    python = Path("/Users/Sajanth/Desktop/Draft/gassi-jarvis/.venv/bin/python")
-    executable = str(python if python.exists() else Path(sys.executable))
     script = r"""
 import builtins
 real_import = builtins.__import__
@@ -487,7 +617,7 @@ with TestClient(app.main.app) as client:
         }
     )
     result = subprocess.run(
-        [executable, "-c", script],
+        [sys.executable, "-c", script],
         cwd=ROOT,
         env=env,
         capture_output=True,
@@ -497,9 +627,53 @@ with TestClient(app.main.app) as client:
     assert result.returncode == 0, result.stderr
 
 
-def test_research_endpoints_report_offline_provider_state_and_preserve_provenance(monkeypatch):
+def _offline_research_data(symbol: str):
+    from app.trading.research.canonical import (
+        AssetIdentity,
+        AssetResearchData,
+        CanonicalAssetType,
+        DataQuality,
+        FreshnessStatus,
+        PriceBar,
+        PriceSeries,
+        QualityStatus,
+        ResearchProvenance,
+    )
+
+    retrieved_at = datetime(2026, 8, 24, tzinfo=timezone.utc)
+    asset_type = CanonicalAssetType.CRYPTO if symbol == "BTC" else CanonicalAssetType.EQUITY
+    asset = AssetIdentity(symbol, asset_type, currency="USD")
+    bars = tuple(
+        PriceBar(
+            retrieved_at - timedelta(days=40 - index),
+            value,
+            value,
+            value,
+            value,
+            Decimal("100"),
+        )
+        for index, value in enumerate(
+            Decimal("100") + Decimal(index) * Decimal("1.5") for index in range(40)
+        )
+    )
+    prices = PriceSeries(
+        asset,
+        bars,
+        "1d",
+        "USD",
+        ResearchProvenance("offline-fixture", "price_history", retrieved_at),
+        bars[-1].timestamp,
+        FreshnessStatus.FRESH,
+        DataQuality(QualityStatus.COMPLETE),
+    )
+    return AssetResearchData(asset, prices=prices, quality=DataQuality(QualityStatus.COMPLETE))
+
+
+def test_research_endpoints_use_real_dispatch_serialization_and_preserve_provenance(monkeypatch):
     import app.main as main_module
+    from app.trading.research.jarvis_tools import JarvisResearchTools
     from app.trading.research.openbb_client import ResearchConfigurationError
+    from app.trading.research.orchestration import ResearchOrchestrator
 
     token = "research-token"
     monkeypatch.setattr(main_module, "API_TOKEN", token)
@@ -507,30 +681,16 @@ def test_research_endpoints_report_offline_provider_state_and_preserve_provenanc
         monkeypatch.delenv(key, raising=False)
 
     class OfflineMacroService:
+        def get_asset_research_data(self, symbol, **_kwargs):
+            return _offline_research_data(symbol)
+
         def get_macro_series(self, *_args, **_kwargs):
             raise ResearchConfigurationError("offline", provider="econdb")
 
-    class ResearchTools:
-        orchestrator = SimpleNamespace(canonical_service=OfflineMacroService())
-
-        def dispatch(self, _name, _arguments):
-            return SimpleNamespace(status=SimpleNamespace(value="success"))
-
-    monkeypatch.setattr(main_module, "research_tools", ResearchTools())
-    monkeypatch.setattr(main_module, "render_research_response", lambda _response: "Deterministic result")
     monkeypatch.setattr(
         main_module,
-        "response_payload",
-        lambda _response: {
-            "status": "success",
-            "sources": [
-                {
-                    "provider": "fixture",
-                    "source_category": "price_history",
-                    "retrieved_at": "2026-08-24T12:00:00+00:00",
-                }
-            ],
-        },
+        "research_tools",
+        JarvisResearchTools(orchestrator=ResearchOrchestrator(OfflineMacroService())),
     )
     client = TestClient(main_module.app)
     headers = {"Authorization": f"Bearer {token}"}
@@ -544,16 +704,22 @@ def test_research_endpoints_report_offline_provider_state_and_preserve_provenanc
     )
 
     assert providers.status_code == 200
-    assert all("credential" not in item.get("provider", "") for item in providers.json()["providers"])
+    provider_payload = providers.json()["providers"]
+    provider_map = {item["provider"]: item for item in provider_payload}
+    assert provider_map["yfinance"]["configuration_state"] == "built_in"
+    assert provider_map["yfinance"]["credential_configured"] is True
+    assert provider_map["fmp"]["configuration_state"] == "not_configured"
+    assert provider_map["fmp"]["credential_configured"] is False
+    assert "test-only-key" not in json.dumps(provider_payload)
     assert macro.status_code == 200
     assert len(macro.json()["failures"]) == 5
     assert all(item["provider"] == "econdb" for item in macro.json()["failures"])
     assert run.status_code == 200
-    assert run.json()["research_payload"]["sources"][0] == {
-        "provider": "fixture",
-        "source_category": "price_history",
-        "retrieved_at": "2026-08-24T12:00:00+00:00",
-    }
+    payload = run.json()["research_payload"]
+    assert payload["status"] == "success"
+    assert payload["sources"][0]["provider"] == "offline-fixture"
+    assert payload["sources"][0]["source_category"] == "price_history"
+    assert payload["sources"][0]["retrieved_at"] == "2026-08-24T00:00:00+00:00"
 
 
 def test_localhost_two_process_transport_executes_one_queued_action(tmp_path, monkeypatch):

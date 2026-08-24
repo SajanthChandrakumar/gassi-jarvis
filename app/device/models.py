@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _utc_now() -> datetime:
@@ -52,6 +52,13 @@ class ActionPayload(BaseModel):
     payload: str = Field(..., min_length=1)
     tainted: bool = False
 
+    @field_validator("payload")
+    @classmethod
+    def reject_blank_payload(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("payload must be a non-empty string")
+        return value
+
 
 class DeviceAction(BaseModel):
     """Action envelope identified independently from its payload."""
@@ -80,6 +87,8 @@ class DeviceAction(BaseModel):
 
     @model_validator(mode="after")
     def synchronize_action_type(self):
+        if isinstance(self.payload, str) and not self.payload.strip():
+            raise ValueError("payload must be a non-empty string")
         payload_type = self.payload.action_type if isinstance(self.payload, ActionPayload) else None
         if self.action_type is None and payload_type is not None:
             self.action_type = payload_type

@@ -215,19 +215,21 @@ class MacAgent:
         return action.command
 
     def _needs_approval(self, action: DeviceAction) -> bool:
-        if action.requires_approval:
-            return True
         payload = action.payload
-        if isinstance(payload, ActionPayload) and payload.tainted:
-            return True
-        if self._action_type(action) == ActionType.SHELL_COMMAND.value:
+        action_type = self._action_type(action)
+        threat_level: int | None = None
+        if action_type == ActionType.SHELL_COMMAND.value:
             try:
                 # Reclassification is intentionally local and authoritative.
-                return int(self.executor.security_level(self._command(action))) >= 2
+                threat_level = int(self.executor.security_level(self._command(action)))
             except Exception:
                 # A classifier failure fails closed.
                 return True
-        return False
+        if action.requires_approval:
+            return True
+        if isinstance(payload, ActionPayload) and payload.tainted:
+            return True
+        return threat_level is not None and threat_level >= 2
 
     def _report_event(self, event: dict[str, Any]) -> None:
         """Report without making execution depend on cloud availability."""
