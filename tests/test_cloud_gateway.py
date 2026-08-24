@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import base64
-import json
-
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -85,9 +83,10 @@ def test_mismatched_device_identity_is_rejected(tmp_path):
         gateway.heartbeat("other-mac")
 
 
-def test_approval_decision_is_idempotent_and_expiry_is_terminal(tmp_path):
+def test_approval_decision_is_idempotent_and_expiry_is_terminal(tmp_path, monkeypatch):
     from app.device.cloud import DeviceGateway
 
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
     clock = FakeClock()
     gateway = DeviceGateway(tmp_path / "cloud.sqlite3", device_id="mac-1", clock=clock)
     gateway.heartbeat("mac-1")
@@ -112,9 +111,10 @@ def test_approval_decision_is_idempotent_and_expiry_is_terminal(tmp_path):
     assert gateway.decide("danger-2", approved=True).status == "expired"
 
 
-def test_result_event_is_idempotent_and_screenshot_bytes_never_persist(tmp_path):
+def test_result_event_is_idempotent_and_screenshot_bytes_never_persist(tmp_path, monkeypatch):
     from app.device.cloud import DeviceGateway
 
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
     analyzed: list[bytes] = []
     gateway = DeviceGateway(
         tmp_path / "cloud.sqlite3",
@@ -138,3 +138,75 @@ def test_result_event_is_idempotent_and_screenshot_bytes_never_persist(tmp_path)
     raw = (tmp_path / "cloud.sqlite3").read_bytes()
     assert image not in raw
     assert b"screenshot_b64" not in raw
+
+
+def test_terminal_result_is_rejected_before_agent_delivery(tmp_path, monkeypatch):
+    from app.device.cloud import DeviceGateway
+
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
+    gateway = DeviceGateway(tmp_path / "cloud.sqlite3", device_id="mac-1")
+    gateway.heartbeat("mac-1")
+    gateway.queue_action("shell_command", "echo hi", action_id="before-delivery")
+
+    with pytest.raises(ValueError, match="delivery"):
+        gateway.record_event(
+            "before-delivery",
+            "device-secret",
+            {"type": "result", "result": {"status": "succeeded"}},
+        )
+
+
+def test_terminal_result_is_rejected_after_approval_expiry(tmp_path, monkeypatch):
+    from app.device.cloud import DeviceGateway
+
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
+    clock = FakeClock()
+    gateway = DeviceGateway(tmp_path / "cloud.sqlite3", device_id="mac-1", clock=clock)
+    gateway.heartbeat("mac-1")
+    gateway.queue_action("shell_command", "rm -rf /", action_id="expired-result")
+    gateway.poll("mac-1")
+    gateway.record_event("expired-result", "device-secret", {"type": "approval_required"})
+    clock.advance(301)
+
+    with pytest.raises(ValueError, match="expired"):
+        gateway.record_event(
+            "expired-result",
+            "device-secret",
+            {"type": "result", "result": {"status": "succeeded"}},
+        )
+
+
+def test_terminal_result_is_rejected_after_denial(tmp_path, monkeypatch):
+    from app.device.cloud import DeviceGateway
+
+    monkeypatch.setenv("JARVIS_DEVICE_TOKEN", "device-secret")
+    gateway = DeviceGateway(tmp_path / "cloud.sqlite3", device_id="mac-1")
+    gateway.heartbeat("mac-1")
+    gateway.queue_action("shell_command", "rm -rf /", action_id="denied-result")
+    gateway.poll("mac-1")
+    gateway.record_event("denied-result", "device-secret", {"type": "approval_required"})
+    gateway.decide("denied-result", approved=False, reason="no")
+
+    with pytest.raises(ValueError, match="denied"):
+        gateway.record_event(
+            "denied-result",
+            "device-secret",
+            {"type": "result", "result": {"status": "succeeded"}},
+        )
+
+
+def test_record_event_fails_closed_when_device_token_is_unset(tmp_path, monkeypatch):
+    from app.device.cloud import DeviceGateway
+
+    monkeypatch.delenv("JARVIS_DEVICE_TOKEN", raising=False)
+    gateway = DeviceGateway(tmp_path / "cloud.sqlite3", device_id="mac-1")
+    gateway.heartbeat("mac-1")
+    gateway.queue_action("shell_command", "echo hi", action_id="no-token")
+    gateway.poll("mac-1")
+
+    with pytest.raises(PermissionError, match="device token"):
+        gateway.record_event(
+            "no-token",
+            "device-secret",
+            {"type": "approval_required"},
+        )

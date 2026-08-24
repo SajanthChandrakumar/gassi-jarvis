@@ -174,18 +174,37 @@ def test_executor_preserves_screenshot_failure(monkeypatch):
         executor.capture_screen()
 
 
-def test_main_routes_mac_tools_through_executor(monkeypatch):
+def test_main_routes_mac_tools_through_cloud_gateway_without_executor_hook(monkeypatch):
     import app.main as main
 
-    from app.device.models import DeviceResult
+    from app.device.models import ActionPayload, ActionStatus, DeviceAction, DeviceLifecycle
     from app.models import ChatRequest, MessagePayload
 
-    open_app = Mock(return_value=DeviceResult(
-        status="succeeded",
-        action="open_app: Safari",
-        output="Erledigt. Safari wurde geöffnet.",
-    ))
-    monkeypatch.setattr(main, "open_app", open_app)
+    class FakeGateway:
+        def __init__(self):
+            self.queued = []
+
+        def queue_action(self, action_type, payload, **kwargs):
+            action = DeviceAction(
+                action_id="cloud-open-1",
+                device_id="mac-1",
+                payload=ActionPayload(action_type=action_type, payload=payload),
+            )
+            self.queued.append((action_type, payload, kwargs))
+            return action
+
+        def wait_for_result(self, action_id, **kwargs):
+            return DeviceLifecycle(
+                action=DeviceAction(
+                    action_id=action_id,
+                    device_id="mac-1",
+                    payload=ActionPayload(action_type="open_app", payload="Safari"),
+                ),
+                status=ActionStatus.QUEUED,
+            )
+
+    gateway = FakeGateway()
+    monkeypatch.setattr(main, "device_gateway", gateway)
     monkeypatch.setattr(main, "get_session", lambda session_id: {"history": []})
     monkeypatch.setattr(main, "get_pending_command", lambda session_id: None)
     monkeypatch.setattr(main, "record_turn", lambda *args, **kwargs: None)
@@ -212,6 +231,8 @@ def test_main_routes_mac_tools_through_executor(monkeypatch):
     )
     result = asyncio.run(main.chat_with_jarvis.__wrapped__(None, request))
 
-    assert result["text"] == "Erledigt. Safari wurde geöffnet."
-    assert result["action"] == "open_app: Safari"
-    open_app.assert_called_once_with("Safari")
+    assert result["text"] == "Die Aktion wurde an den Mac-Agenten übergeben und wartet auf seinen Status."
+    assert result["action"] == "device_queued"
+    assert result["device_action"]["action"]["action_id"] == "cloud-open-1"
+    assert gateway.queued == [("open_app", "Safari", {"tainted": False, "requires_approval": False})]
+    assert not hasattr(main, "open_app")

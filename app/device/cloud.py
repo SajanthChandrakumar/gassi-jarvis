@@ -341,9 +341,7 @@ class DeviceGateway:
         that this is an agent-only operation.
         """
         expected_token = self.device_token or os.environ.get("JARVIS_DEVICE_TOKEN", "")
-        if not device_token or (
-            expected_token and not secrets.compare_digest(device_token, expected_token)
-        ):
+        if not expected_token or not device_token or not secrets.compare_digest(device_token, expected_token):
             raise PermissionError("device token required")
         if not isinstance(event, dict):
             raise ValueError("event must be an object")
@@ -373,9 +371,24 @@ class DeviceGateway:
         if result.action_id not in {None, action_id}:
             raise ValueError("result action id mismatch")
         result.action_id = action_id
-        existing = self._get_row(action_id)
+        now = self._now()
+        row = self._mark_expired_if_needed(row, now=now)
+        existing = row
         if existing and existing["result_json"]:
+            stored_result = DeviceResult.model_validate(json.loads(existing["result_json"]))
+            if stored_result.model_dump(exclude={"finished_at"}) != result.model_dump(exclude={"finished_at"}):
+                raise ValueError("terminal result already recorded")
             return self._lifecycle(existing)
+        allowed_statuses = {
+            ActionStatus.DELIVERED.value,
+            ActionStatus.APPROVED.value,
+            ActionStatus.RUNNING.value,
+        }
+        if row["status"] not in allowed_statuses:
+            raise ValueError(
+                f"cannot record result before delivery or after terminal state "
+                f"(action is {row['status']})"
+            )
         image_b64 = event.get("screenshot_b64")
         analysis: str | None = None
         if image_b64 is not None:
@@ -399,7 +412,6 @@ class DeviceGateway:
                 # enter SQLite, action models, or log records.
                 analysis = self.vision_analyzer(self._row_action(row).command, image)
         with self._lock, self._db:
-            now = self._now()
             self._db.execute(
                 "UPDATE device_actions SET status=?, result_json=?, analysis=?, lease_until=NULL, updated_at=? WHERE action_id=?",
                 (result.status, _json(result), analysis, now, action_id),
