@@ -43,16 +43,40 @@ def _configured_token(request: Request, kind: str) -> str:
     return str(value or "")
 
 
+def validate_token_configuration(
+    api_token: str | None,
+    device_token: str | None,
+    *,
+    agent_routes_enabled: bool = True,
+) -> None:
+    """Reject one bearer secret serving both frontend and agent trust zones."""
+
+    api_token = str(api_token or "")
+    device_token = str(device_token or "")
+    if agent_routes_enabled and api_token and device_token and secrets.compare_digest(api_token, device_token):
+        raise ValueError("JARVIS_API_TOKEN and JARVIS_DEVICE_TOKEN must differ")
+
+
 def _bearer(request: Request) -> str:
     return request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
 
 
 def _require_user(request: Request) -> None:
     expected = _configured_token(request, "user")
+    device_token = _configured_token(request, "device")
+    try:
+        validate_token_configuration(expected, device_token)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Invalid bearer token configuration") from exc
+    provided = _bearer(request)
     if expected:
-        if not secrets.compare_digest(_bearer(request), expected):
+        if not secrets.compare_digest(provided, expected):
             raise HTTPException(status_code=401, detail="Invalid or missing API token")
         return
+    # Local no-token compatibility is deliberately anonymous.  Any bearer is
+    # rejected, including the device credential, so trust zones cannot merge.
+    if provided:
+        raise HTTPException(status_code=401, detail="Bearer token requires JARVIS_API_TOKEN")
     # Match the existing API's safe local-development behavior.
     if request.client and request.client.host not in {"127.0.0.1", "::1", "testclient"}:
         raise HTTPException(status_code=401, detail="Remote access requires JARVIS_API_TOKEN")
@@ -60,6 +84,11 @@ def _require_user(request: Request) -> None:
 
 def _require_device(request: Request) -> str:
     expected = _configured_token(request, "device")
+    api_token = _configured_token(request, "user")
+    try:
+        validate_token_configuration(api_token, expected)
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="Invalid bearer token configuration") from exc
     provided = _bearer(request)
     if not expected or not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing device token")
@@ -140,4 +169,4 @@ async def device_agent_event(action_id: str, request: Request) -> dict[str, Any]
     return lifecycle.model_dump(mode="json")
 
 
-__all__ = ["router"]
+__all__ = ["router", "validate_token_configuration"]

@@ -157,6 +157,7 @@ def test_poll_request_uses_device_bearer_and_two_second_default(tmp_path):
         "https://jarvis.example.test",
         "device-secret",
         state_path=tmp_path / "agent.sqlite3",
+        executor=FakeExecutor(),
         transport=transport,
     )
 
@@ -176,6 +177,7 @@ def test_agent_backoff_is_bounded(tmp_path):
         "https://jarvis.example.test",
         "device-secret",
         state_path=tmp_path / "agent.sqlite3",
+        executor=FakeExecutor(),
         transport=lambda *args, **kwargs: (_ for _ in ()).throw(OSError("offline")),
         sleep=sleeps.append,
     )

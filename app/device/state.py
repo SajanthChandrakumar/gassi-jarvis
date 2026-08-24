@@ -266,6 +266,15 @@ class AgentState:
         ).fetchall()
         return [stored for row in rows if (stored := self._row_to_payload(row)) is not None]
 
+    def ambiguous_actions(self) -> list[StoredPayload]:
+        """Return actions whose execution state is unknown after a crash."""
+
+        rows = self._db.execute(
+            "SELECT * FROM pending_payloads WHERE status IN (?, ?) ORDER BY created_at",
+            ("approved", "running"),
+        ).fetchall()
+        return [stored for row in rows if (stored := self._row_to_payload(row)) is not None]
+
     def get_terminal_result(self, action_id: str) -> DeviceResult | None:
         row = self._db.execute(
             "SELECT result_json FROM terminal_results WHERE action_id = ?", (action_id,)

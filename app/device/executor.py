@@ -4,8 +4,10 @@ The cloud-facing route should pass device work here instead of importing
 subprocess, the security router, or screenshot implementation directly.
 """
 
+import os
 import re
 import subprocess
+from pathlib import Path
 
 from app.security import evaluate_security_level, execute_shell_command as _execute_shell_command
 from app.vision import capture_and_compress_screen
@@ -72,10 +74,17 @@ def security_level(command: str) -> int:
     return evaluate_security_level(command)
 
 
-def execute_shell_command(command: str, force: bool = False) -> str:
+def execute_shell_command(
+    command: str,
+    force: bool = False,
+    *,
+    cwd: str | Path | None = None,
+) -> str:
     """Classify and execute a shell command through the existing router."""
 
-    return _execute_shell_command(command, force=force)
+    if cwd is None:
+        return _execute_shell_command(command, force=force)
+    return _execute_shell_command(command, force=force, cwd=str(cwd))
 
 
 def capture_screen() -> bytes:
@@ -87,12 +96,30 @@ def capture_screen() -> bytes:
 class MacExecutor:
     """Small object adapter for future local-agent composition."""
 
-    is_safe_app_name = staticmethod(is_safe_app_name)
-    validate_app_name = staticmethod(validate_app_name)
-    open_app = staticmethod(open_app)
-    security_level = staticmethod(security_level)
-    execute_shell_command = staticmethod(execute_shell_command)
-    capture_screen = staticmethod(capture_screen)
+    def __init__(self, shell_cwd: str | Path | None = None) -> None:
+        configured = shell_cwd if shell_cwd is not None else os.environ.get("JARVIS_SHELL_CWD", "")
+        path = Path(configured) if configured else None
+        if path is None or not path.is_absolute() or not path.is_dir():
+            raise ValueError("JARVIS_SHELL_CWD must be an existing absolute directory")
+        self.shell_cwd = str(path)
+
+    def is_safe_app_name(self, name: str) -> bool:
+        return is_safe_app_name(name)
+
+    def validate_app_name(self, name: str) -> bool:
+        return validate_app_name(name)
+
+    def open_app(self, name: str) -> DeviceResult:
+        return open_app(name)
+
+    def security_level(self, command: str) -> int:
+        return security_level(command)
+
+    def execute_shell_command(self, command: str, force: bool = False) -> str:
+        return execute_shell_command(command, force=force, cwd=self.shell_cwd)
+
+    def capture_screen(self) -> bytes:
+        return capture_screen()
 
 
 __all__ = [

@@ -24,7 +24,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .models import ActionPayload, ActionType, DeviceAction, DeviceDecision, DeviceResult
 from .state import AgentState
@@ -39,6 +39,16 @@ MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024
 
 Transport = Callable[[str, str, Mapping[str, str], Any], Any]
 Report = Callable[[dict[str, Any]], Any]
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects so bearer headers can never reach another origin."""
+
+    def redirect_request(self, *_args: Any, **_kwargs: Any):
+        return None
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler)
 
 
 def validate_agent_url(url: str) -> bool:
@@ -121,6 +131,7 @@ class MacAgent:
         boot_identity: str | Callable[[], str] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         request_timeout: float = 15.0,
+        shell_cwd: str | Path | None = None,
     ) -> None:
         if not validate_agent_url(cloud_url):
             raise ValueError("cloud URL must use HTTPS, except for loopback HTTP")
@@ -128,6 +139,10 @@ class MacAgent:
             raise ValueError("device token is required")
         if not device_id or not device_id.strip():
             raise ValueError("device id is required")
+        if shell_cwd is not None:
+            shell_path = Path(shell_cwd)
+            if not shell_path.is_absolute() or not shell_path.is_dir():
+                raise ValueError("JARVIS_SHELL_CWD must be an existing absolute directory")
 
         self.cloud_url = cloud_url.rstrip("/")
         self.device_token = device_token
@@ -154,8 +169,13 @@ class MacAgent:
         if executor is None:
             from .executor import MacExecutor
 
-            executor = MacExecutor()
+            executor = MacExecutor(shell_cwd=shell_cwd)
         self.executor = executor
+        # A persisted approved/running row may have crossed the side-effect
+        # boundary before the previous process died.  Mark it terminally
+        # unknown before accepting redelivery; replaying it could duplicate a
+        # side effect.
+        self._recover_ambiguous_actions()
 
     # ------------------------------------------------------------------
     # Cloud transport
@@ -185,7 +205,10 @@ class MacAgent:
             encoded = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             request_headers["Content-Type"] = "application/json"
         request = Request(url, data=encoded, headers=request_headers, method=method)
-        with urlopen(request, timeout=self.request_timeout) as response:
+        # The standard ``urlopen`` opener follows 3xx responses.  A device
+        # bearer must never be replayed to a redirected, cross-host, or
+        # downgraded HTTP URL, so every redirect is a hard transport failure.
+        with _NO_REDIRECT_OPENER.open(request, timeout=self.request_timeout) as response:
             if getattr(response, "status", 200) == 204:
                 return {}
             raw = response.read(MAX_RESPONSE_BYTES + 1)
@@ -305,6 +328,20 @@ class MacAgent:
         )
         self._report_result(terminal, screenshot if _new else None)
         return terminal
+
+    def _recover_ambiguous_actions(self) -> None:
+        for stored in self.state.ambiguous_actions():
+            self._finish(
+                DeviceResult(
+                    action_id=stored.action.action_id,
+                    status="failed",
+                    action="action_recovery_required",
+                    error=(
+                        "The action may have crossed its side-effect boundary before the agent "
+                        "restarted; execution is unknown. Reissue the action if it is still needed."
+                    ),
+                )
+            )
 
     def _reject_without_storage(self, action_id: str, reason: str) -> DeviceResult:
         result = DeviceResult(

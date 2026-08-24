@@ -425,7 +425,7 @@ def test_tainted_approval_uses_authoritative_classifier_and_forced_executor(monk
 
     execute_calls = []
 
-    def execute_with_trace(command, *, force=False):
+    def execute_with_trace(command, *, force=False, cwd=None):
         execute_calls.append((command, force))
         return "approved execution"
 
@@ -436,7 +436,7 @@ def test_tainted_approval_uses_authoritative_classifier_and_forced_executor(monk
         "http://127.0.0.1:8000",
         "device-secret",
         state_path=tmp_path / "tainted-approval.sqlite3",
-        executor=executor_module.MacExecutor(),
+        executor=executor_module.MacExecutor(shell_cwd=tmp_path),
         report=lambda _event: None,
     )
     action = DeviceAction(

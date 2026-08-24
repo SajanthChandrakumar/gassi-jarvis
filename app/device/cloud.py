@@ -257,38 +257,78 @@ class DeviceGateway:
         return self._lifecycle(row) if row else None
 
     def _mark_expired_if_needed(self, row: sqlite3.Row, *, now: float) -> sqlite3.Row:
+        with self._lock, self._db:
+            return self._expire_row_locked(row, now=now)
+
+    def _expire_row_locked(self, row: sqlite3.Row, *, now: float) -> sqlite3.Row:
+        """Expire one waiting row exactly once while the gateway lock is held."""
+
         deadline = row["approval_deadline"]
-        if row["status"] == ActionStatus.AWAITING_APPROVAL.value and deadline is not None and now >= deadline:
-            with self._lock, self._db:
-                self._db.execute(
-                    "UPDATE device_actions SET status=?, updated_at=?, lease_until=NULL WHERE action_id=?",
-                    (ActionStatus.EXPIRED.value, now, row["action_id"]),
-                )
+        if row["status"] == ActionStatus.AWAITING_APPROVAL.value and (
+            deadline is None or now >= deadline
+        ):
+            changed = self._db.execute(
+                "UPDATE device_actions SET status=?, updated_at=?, lease_until=NULL "
+                "WHERE action_id=? AND status=? AND "
+                "(approval_deadline IS NULL OR approval_deadline <= ?)",
+                (
+                    ActionStatus.EXPIRED.value,
+                    now,
+                    row["action_id"],
+                    ActionStatus.AWAITING_APPROVAL.value,
+                    now,
+                ),
+            )
+            if changed.rowcount not in {0, 1}:
+                raise RuntimeError("unexpected expiry transition count")
             return self._get_row(row["action_id"]) or row
         return row
 
     def decide(self, action_id: str, *, approved: bool, reason: str | None = None) -> DeviceLifecycle:
-        row = self._get_row(action_id)
-        if row is None:
-            raise KeyError("unknown action id")
         now = self._now()
-        row = self._mark_expired_if_needed(row, now=now)
-        if row["status"] == ActionStatus.EXPIRED.value:
-            return self._lifecycle(row)
-        if row["status"] != ActionStatus.AWAITING_APPROVAL.value:
-            if row["decision_json"]:
-                current = DeviceDecision.model_validate(json.loads(row["decision_json"]))
-                if current.approved != approved or current.reason != reason:
-                    raise ValueError("decision already recorded")
-                return self._lifecycle(row)
-            raise ValueError("action is not awaiting approval")
         decision = DeviceDecision(action_id=action_id, approved=approved, reason=reason)
         with self._lock, self._db:
-            self._db.execute(
-                "UPDATE device_actions SET decision_json=?, status=?, updated_at=? WHERE action_id=?",
-                (_json(decision), ActionStatus.APPROVED.value if approved else ActionStatus.DENIED.value, now, action_id),
+            row = self._get_row(action_id)
+            if row is None:
+                raise KeyError("unknown action id")
+            row = self._expire_row_locked(row, now=now)
+            if row["status"] == ActionStatus.EXPIRED.value:
+                return self._lifecycle(row)
+            if row["status"] != ActionStatus.AWAITING_APPROVAL.value:
+                if row["decision_json"]:
+                    current = DeviceDecision.model_validate(json.loads(row["decision_json"]))
+                    if current.approved != approved or current.reason != reason:
+                        raise ValueError("decision already recorded")
+                    return self._lifecycle(row)
+                raise ValueError("action is not awaiting approval")
+
+            changed = self._db.execute(
+                "UPDATE device_actions SET decision_json=?, status=?, updated_at=? "
+                "WHERE action_id=? AND status=? AND approval_deadline IS NOT NULL "
+                "AND approval_deadline > ? AND decision_json IS NULL",
+                (
+                    _json(decision),
+                    ActionStatus.APPROVED.value if approved else ActionStatus.DENIED.value,
+                    now,
+                    action_id,
+                    ActionStatus.AWAITING_APPROVAL.value,
+                    now,
+                ),
             )
-        return self.get_action(action_id)  # type: ignore[return-value]
+            if changed.rowcount != 1:
+                current_row = self._get_row(action_id)
+                if current_row is None:
+                    raise KeyError("unknown action id")
+                current_row = self._expire_row_locked(current_row, now=now)
+                if current_row["decision_json"]:
+                    current = DeviceDecision.model_validate(json.loads(current_row["decision_json"]))
+                    if current.approved != approved or current.reason != reason:
+                        raise ValueError("decision already recorded")
+                    return self._lifecycle(current_row)
+                if current_row["status"] == ActionStatus.EXPIRED.value:
+                    return self._lifecycle(current_row)
+                raise ValueError("action decision lost a concurrent transition")
+            return self._lifecycle(self._get_row(action_id) or row)
 
     def poll(self, device_id: str) -> dict[str, list[dict[str, Any]]]:
         self._configured_device(device_id)
@@ -345,23 +385,45 @@ class DeviceGateway:
             raise PermissionError("device token required")
         if not isinstance(event, dict):
             raise ValueError("event must be an object")
-        row = self._get_row(action_id)
-        if row is None:
-            raise KeyError("unknown action id")
         kind = event.get("type")
         if kind == "approval_required":
             now = self._now()
-            row = self._mark_expired_if_needed(row, now=now)
-            if row["status"] == ActionStatus.EXPIRED.value:
-                return self._lifecycle(row)
-            if row["status"] not in {ActionStatus.QUEUED.value, ActionStatus.DELIVERED.value, ActionStatus.AWAITING_APPROVAL.value}:
-                return self._lifecycle(row)
             with self._lock, self._db:
-                self._db.execute(
-                    "UPDATE device_actions SET status=?, approval_deadline=?, lease_until=NULL, updated_at=? WHERE action_id=?",
-                    (ActionStatus.AWAITING_APPROVAL.value, now + APPROVAL_TTL_SECONDS, now, action_id),
+                row = self._get_row(action_id)
+                if row is None:
+                    raise KeyError("unknown action id")
+                row = self._expire_row_locked(row, now=now)
+                if row["status"] == ActionStatus.EXPIRED.value:
+                    return self._lifecycle(row)
+                if row["status"] == ActionStatus.AWAITING_APPROVAL.value:
+                    # Duplicate approval-required events are an idempotent
+                    # replay.  In particular, never extend the original TTL.
+                    return self._lifecycle(row)
+                if row["status"] not in {ActionStatus.QUEUED.value, ActionStatus.DELIVERED.value}:
+                    # Approval-required cannot revert an approved or terminal
+                    # action to a waiting state.
+                    return self._lifecycle(row)
+                changed = self._db.execute(
+                    "UPDATE device_actions SET status=?, approval_deadline=?, "
+                    "lease_until=NULL, updated_at=? WHERE action_id=? "
+                    "AND status IN (?,?) AND approval_deadline IS NULL",
+                    (
+                        ActionStatus.AWAITING_APPROVAL.value,
+                        now + APPROVAL_TTL_SECONDS,
+                        now,
+                        action_id,
+                        ActionStatus.QUEUED.value,
+                        ActionStatus.DELIVERED.value,
+                    ),
                 )
-            return self.get_action(action_id)  # type: ignore[return-value]
+                if changed.rowcount not in {0, 1}:
+                    raise RuntimeError("unexpected approval transition count")
+                # A zero-row update is the idempotent/concurrent path; reread
+                # the authoritative row rather than trusting the stale copy.
+                row = self._get_row(action_id)
+                if row is None:
+                    raise KeyError("unknown action id")
+                return self._lifecycle(row)
         if kind != "result":
             raise ValueError("unknown device event type")
         raw_result = event.get("result")
@@ -372,51 +434,72 @@ class DeviceGateway:
             raise ValueError("result action id mismatch")
         result.action_id = action_id
         now = self._now()
-        row = self._mark_expired_if_needed(row, now=now)
-        existing = row
-        if existing and existing["result_json"]:
-            stored_result = DeviceResult.model_validate(json.loads(existing["result_json"]))
-            if stored_result.model_dump(exclude={"finished_at"}) != result.model_dump(exclude={"finished_at"}):
-                raise ValueError("terminal result already recorded")
-            return self._lifecycle(existing)
-        allowed_statuses = {
-            ActionStatus.DELIVERED.value,
-            ActionStatus.APPROVED.value,
-            ActionStatus.RUNNING.value,
-        }
-        if row["status"] not in allowed_statuses:
-            raise ValueError(
-                f"cannot record result before delivery or after terminal state "
-                f"(action is {row['status']})"
-            )
-        image_b64 = event.get("screenshot_b64")
-        analysis: str | None = None
-        if image_b64 is not None:
-            action = self._row_action(row)
-            if action.action_type != ActionType.TAKE_SCREENSHOT:
-                raise ValueError("screenshot is only valid for screenshot actions")
-            if not isinstance(image_b64, str):
-                raise ValueError("screenshot must be base64 text")
-            try:
-                # encoded length bound is checked before decoding to avoid an
-                # attacker allocating an unbounded byte string.
-                if len(image_b64) > ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4 + 4:
-                    raise ValueError("screenshot exceeds size limit")
-                image = base64.b64decode(image_b64, validate=True)
-            except (binascii.Error, ValueError) as exc:
-                raise ValueError("invalid screenshot payload") from exc
-            if len(image) > MAX_SCREENSHOT_BYTES:
-                raise ValueError("screenshot exceeds size limit")
-            if self.vision_analyzer is not None:
-                # The bytes are deliberately scoped to this call and never
-                # enter SQLite, action models, or log records.
-                analysis = self.vision_analyzer(self._row_action(row).command, image)
         with self._lock, self._db:
-            self._db.execute(
-                "UPDATE device_actions SET status=?, result_json=?, analysis=?, lease_until=NULL, updated_at=? WHERE action_id=?",
-                (result.status, _json(result), analysis, now, action_id),
+            row = self._get_row(action_id)
+            if row is None:
+                raise KeyError("unknown action id")
+            row = self._expire_row_locked(row, now=now)
+            if row["result_json"]:
+                stored_result = DeviceResult.model_validate(json.loads(row["result_json"]))
+                if stored_result.model_dump(exclude={"finished_at"}) != result.model_dump(exclude={"finished_at"}):
+                    raise ValueError("terminal result already recorded")
+                return self._lifecycle(row)
+            allowed_statuses = {
+                ActionStatus.DELIVERED.value,
+                ActionStatus.APPROVED.value,
+                ActionStatus.RUNNING.value,
+            }
+            if row["status"] not in allowed_statuses:
+                raise ValueError(
+                    f"cannot record result before delivery or after terminal state "
+                    f"(action is {row['status']})"
+                )
+            image_b64 = event.get("screenshot_b64")
+            analysis: str | None = None
+            if image_b64 is not None:
+                action = self._row_action(row)
+                if action.action_type != ActionType.TAKE_SCREENSHOT:
+                    raise ValueError("screenshot is only valid for screenshot actions")
+                if not isinstance(image_b64, str):
+                    raise ValueError("screenshot must be base64 text")
+                try:
+                    # encoded length bound is checked before decoding to avoid an
+                    # attacker allocating an unbounded byte string.
+                    if len(image_b64) > ((MAX_SCREENSHOT_BYTES + 2) // 3) * 4 + 4:
+                        raise ValueError("screenshot exceeds size limit")
+                    image = base64.b64decode(image_b64, validate=True)
+                except (binascii.Error, ValueError) as exc:
+                    raise ValueError("invalid screenshot payload") from exc
+                if len(image) > MAX_SCREENSHOT_BYTES:
+                    raise ValueError("screenshot exceeds size limit")
+                if self.vision_analyzer is not None:
+                    # The bytes are deliberately scoped to this call and never
+                    # enter SQLite, action models, or log records.
+                    analysis = self.vision_analyzer(self._row_action(row).command, image)
+            changed = self._db.execute(
+                "UPDATE device_actions SET status=?, result_json=?, analysis=?, "
+                "lease_until=NULL, updated_at=? WHERE action_id=? AND result_json IS NULL "
+                "AND status IN (?,?,?)",
+                (
+                    result.status,
+                    _json(result),
+                    analysis,
+                    now,
+                    action_id,
+                    ActionStatus.DELIVERED.value,
+                    ActionStatus.APPROVED.value,
+                    ActionStatus.RUNNING.value,
+                ),
             )
-        return self.get_action(action_id)  # type: ignore[return-value]
+            if changed.rowcount != 1:
+                current = self._get_row(action_id)
+                if current is not None and current["result_json"]:
+                    stored_result = DeviceResult.model_validate(json.loads(current["result_json"]))
+                    if stored_result.model_dump(exclude={"finished_at"}) == result.model_dump(exclude={"finished_at"}):
+                        return self._lifecycle(current)
+                    raise ValueError("terminal result already recorded")
+                raise ValueError("result lost a concurrent lifecycle transition")
+            return self._lifecycle(self._get_row(action_id) or row)
 
     def wait_for_result(
         self, action_id: str, *, timeout: float = 0.5, interval: float = 0.05

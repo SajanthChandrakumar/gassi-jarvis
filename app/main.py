@@ -66,7 +66,7 @@ from app.agent import (
 )
 from app.device.cloud import DeviceGateway
 from app.device.models import DeviceUnavailable
-from app.device.routes import router as device_router
+from app.device.routes import router as device_router, validate_token_configuration
 from app.trading.research.jarvis_tools import (
     JarvisResearchTools,
     crypto_asset_from_research_question,
@@ -173,6 +173,10 @@ device_gateway = DeviceGateway(
 app.state.device_gateway = device_gateway
 app.state.jarvis_api_token = lambda: API_TOKEN
 app.state.jarvis_device_token = lambda: os.environ.get("JARVIS_DEVICE_TOKEN", "")
+# Fail during configuration rather than allowing one secret to cross the
+# browser/device trust boundary.  Route-level checks remain as a fail-closed
+# guard for applications that mount the router independently.
+validate_token_configuration(API_TOKEN, os.environ.get("JARVIS_DEVICE_TOKEN", ""))
 app.include_router(device_router)
 
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
@@ -194,6 +198,12 @@ async def verify_token(request: Request) -> None:
     """
     if not API_TOKEN:
         client_host = request.client.host if request.client else ""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.removeprefix("Bearer ").strip():
+            raise HTTPException(
+                status_code=401,
+                detail="Bearer token requires JARVIS_API_TOKEN on the server.",
+            )
         if client_host not in _LOCALHOST_ADDRS:
             raise HTTPException(
                 status_code=401,
