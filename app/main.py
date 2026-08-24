@@ -13,7 +13,7 @@ All business logic is delegated to the respective microservice modules:
     - models.py   → Pydantic validation
     - memory.py   → Session state + ChromaDB
     - agent.py    → Gemini LLM + tool declarations
-    - security.py → Command threat classification + subprocess execution
+    - device/    → Local Mac capability boundary
 """
 
 import base64
@@ -22,7 +22,6 @@ import logging
 import os
 import re
 import secrets
-import subprocess
 
 # aiohttp/OpenBB can create its shared TLS context while importing other
 # integrations. Configure the virtual environment CA bundle before those
@@ -64,8 +63,12 @@ from app.agent import (
     handle_memory_tool,
     search_web,
 )
-from app.security import evaluate_security_level, execute_shell_command
-from app.vision import capture_and_compress_screen
+from app.device.executor import (
+    capture_screen,
+    execute_shell_command,
+    open_app,
+    security_level,
+)
 from app.trading.research.jarvis_tools import (
     JarvisResearchTools,
     crypto_asset_from_research_question,
@@ -142,10 +145,6 @@ app.mount(
 )
 
 TTS_VOICE = "de-DE-KillianNeural"
-
-# App names passed to AppleScript may only contain these characters.
-# Blocks quote/backslash breakouts into arbitrary AppleScript.
-_SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,64}$")
 
 # Markdown links [text](url) → keep just the visible text.
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
@@ -519,48 +518,12 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
 
                         # ── 3a: open_app → Direct execution via osascript ──
                         if action_type == "open_app":
-                            # Strict allowlist on the app name: anything with
-                            # quotes/backslashes could break out of the
-                            # AppleScript string and run arbitrary script,
-                            # bypassing the security router entirely.
-                            if not _SAFE_APP_NAME.match(payload):
-                                return await respond(
-                                    text=(
-                                        f"Den App-Namen '{payload}' habe ich "
-                                        f"abgelehnt — er enthält unzulässige Zeichen."
-                                    ),
-                                    action="open_app_rejected",
-                                )
-                            try:
-                                subprocess.run(
-                                    [
-                                        "osascript",
-                                        "-e",
-                                        f'tell application "{payload}" to activate',
-                                    ],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                )
-                                response_text = f"Erledigt. {payload} wurde geöffnet."
-                                return await respond(
-                                    text=response_text,
-                                    action=f"open_app: {payload}",
-                                )
-                            except subprocess.TimeoutExpired:
-                                return await respond(
-                                    text=f"Timeout beim Öffnen von {payload}.",
-                                    action="open_app_timeout",
-                                )
-                            except OSError as e:
-                                return await respond(
-                                    text=f"Fehler beim Öffnen von {payload}: {e}",
-                                    action="open_app_error",
-                                )
+                            result = open_app(payload)
+                            return await respond(text=result.output, action=result.action)
 
                         # ── 3b: shell_command → Security router ────────────
                         elif action_type == "shell_command":
-                            threat_level = evaluate_security_level(payload)
+                            threat_level = security_level(payload)
 
                             # Indirect-injection guard: if the previous reply
                             # came from a screenshot / web search / recalled
@@ -616,7 +579,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                     elif fc.name == "take_screenshot":
                         log.info("Vision: nehme Screenshot auf")
                         try:
-                            image_bytes = capture_and_compress_screen()
+                            image_bytes = capture_screen()
                         except (PermissionError, FileNotFoundError) as e:
                             return await respond(
                                 text=str(e),
