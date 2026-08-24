@@ -74,10 +74,15 @@ def test_frontend_loads_runtime_config_before_app_and_uses_one_api_url_helper() 
 
     assert '<script src="/config.js" defer></script>' in html
     assert html.index('/config.js') < html.index('/static/app.js')
+    assert "function normalizeApiBase" in js
+    assert "raw.includes('?')" in js
+    assert "raw.includes('#')" in js
     assert "function apiUrl" in js
+    assert "new URL(endpoint, API_BASE_URL + '/')" in js
+    assert "function apiFetch" in js
     assert "fetch('/api/" not in js
     for endpoint in ("/api/chat", "/api/research/run", "/api/research/providers", "/api/research/macro"):
-        assert f"fetch(apiUrl('{endpoint}'" in js
+        assert f"apiFetch('{endpoint}'" in js
 
 
 def test_frontend_exposes_structured_device_status_approval_and_result_polling() -> None:
@@ -88,11 +93,25 @@ def test_frontend_exposes_structured_device_status_approval_and_result_polling()
     for name in ("loadDeviceStatus", "renderDeviceAction", "submitDeviceDecision", "pollDeviceAction"):
         assert f"function {name}" in ui
     assert "device_action" in ui
-    assert "apiUrl('/api/device/status')" in ui
-    assert "apiUrl('/api/device/actions/'" in ui
-    assert "apiUrl('/api/device/actions/' + encodeURIComponent(actionId) + '/decision')" in ui
+    assert "apiFetch('/api/device/status'" in ui
+    assert "apiFetch('/api/device/actions/'" in ui
+    assert "apiFetch('/api/device/actions/' + encodeURIComponent(actionId) + '/decision'" in ui
+    for name in ("cancelDevicePolling", "cancelAllDevicePolling", "startDevicePolling"):
+        assert f"function {name}" in ui
+    assert "devicePolls" in ui
+    assert "generation" in ui
+    assert "DEVICE_POLL_RETRY_LIMIT" in ui
+    assert "DEVICE_POLL_MAX_DURATION_MS" in ui
+    assert "timed_out" in ui
+    assert "Authorization required" in ui
+    assert "state.retries < DEVICE_POLL_RETRY_LIMIT" in ui
+    assert "state.retries = 0" in ui
+    assert "Device action status is unavailable after repeated attempts." in ui
+    assert "Device action status polling timed out." in ui
     assert "setTimeout(() => pollDeviceAction" in ui
     assert "/api/device-agent/" not in ui
+    assert "cancelAllDevicePolling()" in ui
+    assert "sessionId = newSession()" in ui
 
 
 def test_asset_renderer_has_document_sections_and_compact_formatters() -> None:
@@ -137,7 +156,7 @@ def test_command_center_has_command_first_prompt_and_research_modes() -> None:
 def test_research_requests_preserve_existing_chat_flow() -> None:
     ui = _ui()
 
-    assert "fetch(apiUrl('/api/chat'" in ui
+    assert "apiFetch('/api/chat'" in ui
     assert "session_id: sessionId" in ui
     assert "finance_research:" in ui
     assert "hitl_pending" in ui
@@ -181,7 +200,7 @@ def test_provider_status_is_explicit_and_does_not_expose_credentials() -> None:
 
     assert "Data coverage" in ui
     assert "loadProviderStatus" in ui
-    assert "apiUrl('/api/research/providers')" in ui
+    assert "apiFetch('/api/research/providers'" in ui
     assert "Credential values are never displayed." in ui
     assert "configuration_state" in ui
     assert "Connection error. Please check that the Jarvis server is available." in ui
@@ -201,7 +220,7 @@ def test_command_center_loads_canonical_macro_context() -> None:
 
     assert 'id="macroState"' in ui
     assert "loadMacroContext" in ui
-    assert "apiUrl('/api/research/macro')" in ui
+    assert "apiFetch('/api/research/macro'" in ui
     assert "macro-grid" in ui
     assert "Macro context" in ui
 
@@ -223,7 +242,7 @@ def test_navigation_opens_validated_research_workflows_and_charts() -> None:
     assert 'id="workflowAsset"' in ui
     assert 'id="workflowBenchmark"' in ui
     assert "openWorkflow" in ui
-    assert "fetch(apiUrl('/api/research/run'" in ui
+    assert "apiFetch('/api/research/run'" in ui
     assert "appendPriceChart" in ui
     assert ".workflow-panel[hidden], .workflow-panel [hidden] { display: none; }" in ui
     assert "price-chart" in ui

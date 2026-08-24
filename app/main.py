@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import secrets
+from urllib.parse import urlsplit, urlunsplit
 
 # aiohttp/OpenBB can create its shared TLS context while importing other
 # integrations. Configure the virtual environment CA bundle before those
@@ -355,7 +356,31 @@ async def get_index():
 @app.get("/config.js")
 async def get_frontend_config():
     """Serve the runtime API origin without allowing browser caching."""
-    api_base_url = os.environ.get("JARVIS_FRONTEND_API_BASE_URL", "").strip()
+    configured = os.environ.get("JARVIS_FRONTEND_API_BASE_URL", "").strip()
+    api_base_url = ""
+    if configured:
+        try:
+            if any(char.isspace() or ord(char) < 0x20 for char in configured):
+                raise ValueError("whitespace")
+            parsed = urlsplit(configured)
+            if (
+                parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or "?" in configured
+                or "#" in configured
+                or not parsed.hostname
+            ):
+                raise ValueError("invalid URL form")
+            parsed.port  # Trigger validation for malformed ports.
+            api_base_url = urlunsplit(
+                (parsed.scheme.lower(), parsed.netloc, parsed.path.rstrip("/"), "", "")
+            )
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid JARVIS_FRONTEND_API_BASE_URL; using same-origin frontend API requests"
+            )
     script = "window.JARVIS_CONFIG = { apiBaseUrl: " + json.dumps(api_base_url) + " };"
     return Response(
         content=script,
