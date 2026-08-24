@@ -49,7 +49,7 @@ class ActionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", use_enum_values=True)
 
     action_type: ActionType
-    payload: str = ""
+    payload: str = Field(..., min_length=1)
     tainted: bool = False
 
 
