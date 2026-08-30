@@ -204,6 +204,70 @@ inbox_tool = types.Tool(
 )
 
 
+# Financial research is intentionally a small, read-only surface.  Gemini can
+# choose a high-level question type, but may not call provider/statistical
+# primitives or compose arbitrary calculation chains.
+finance_research_tool = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="research_asset",
+            description="Erstellt einen strukturierten, read-only Research-Report für genau einen Vermögenswert. Keine Empfehlung oder Handelsaktion.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "asset": types.Schema(type=types.Type.STRING, description="Ticker oder üblicher Name, z.B. NVDA, Apple oder BTC."),
+                    "timeframe": types.Schema(type=types.Type.STRING, description="Optional: 1y, 3m, seit 2020 oder historisch."),
+                    "report_depth": types.Schema(type=types.Type.STRING, enum=["brief", "standard", "detailed"]),
+                },
+                required=["asset"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="compare_assets",
+            description="Vergleicht zwei Vermögenswerte als strukturierte Research-Reports, ohne einen Gewinner oder eine Kaufempfehlung zu bestimmen.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "left_asset": types.Schema(type=types.Type.STRING),
+                    "right_asset": types.Schema(type=types.Type.STRING),
+                    "timeframe": types.Schema(type=types.Type.STRING),
+                    "report_depth": types.Schema(type=types.Type.STRING, enum=["brief", "standard", "detailed"]),
+                },
+                required=["left_asset", "right_asset"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="research_history",
+            description="Untersucht historische Volatilitätsereignisse und tatsächliche Folgerenditen für einen Vermögenswert. Read-only.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "asset": types.Schema(type=types.Type.STRING),
+                    "timeframe": types.Schema(type=types.Type.STRING),
+                    "lookback": types.Schema(type=types.Type.INTEGER, description="Rollierendes Volatilitätsfenster; optional."),
+                    "volatility_percentile": types.Schema(type=types.Type.STRING, description="Optionales Perzentil zwischen 0 und 1, z.B. 0.90."),
+                },
+                required=["asset"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="analyze_relationship",
+            description="Berechnet eine deterministische Korrelation oder Beta zwischen Asset und Benchmark. Keine Kausalitätsbehauptung.",
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "asset": types.Schema(type=types.Type.STRING),
+                    "benchmark": types.Schema(type=types.Type.STRING),
+                    "timeframe": types.Schema(type=types.Type.STRING),
+                    "analysis": types.Schema(type=types.Type.STRING, enum=["correlation", "beta"]),
+                },
+                required=["asset", "benchmark"],
+            ),
+        ),
+    ]
+)
+
+
 def _build_system_prompt() -> str:
     """Build the Jarvis system instruction with current date/time."""
     now = datetime.now()
@@ -227,7 +291,13 @@ def _build_system_prompt() -> str:
         "eines Termins nutze 'create_calendar_event' — der User bestätigt danach mündlich. "
         "5. AUFGABEN: Wenn der User dir ein To-Do diktiert ('notier', 'setz auf die Liste'), "
         "nutze 'capture_task'. Fragt er nach seiner Liste, nutze 'list_tasks'. "
-        "6. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
+        "6. FINANZRECHERCHE: Nutze ausschließlich die vier Research-Tools für Finanzfragen. "
+        "research_asset unterstützt Aktien, ETFs und die kanonischen Kryptowährungen BTC und ETH. "
+        "Eine Frage nach der Performance, Entwicklung oder Volatilität von BTC/ETH ist immer "
+        "eine Finanzrecherche: rufe research_asset mit dem Ticker auf und behaupte niemals, "
+        "dass Krypto nicht verfügbar sei oder ersetze die Research-Anfrage durch Websuche. "
+        "Ihre strukturierten Resultate sind maßgeblich; erfinde keine Zahlen, Empfehlungen oder Kausalität. "
+        "7. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
         "in deiner Textantwort, da diese vom Audio-System (TTS) sonst laut vorgelesen werden. "
         "Sei ein mitdenkender Assistent, kein dummer Chatbot. Biete Lösungen an, bevor der User danach fragt."
     )
@@ -281,7 +351,7 @@ def get_gemini_response(
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
-            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, calendar_tool, inbox_tool, save_memory, recall_memory, get_memory_stats],
+            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, calendar_tool, inbox_tool, finance_research_tool, save_memory, recall_memory, get_memory_stats],
             temperature=0.1,
         ),
     )

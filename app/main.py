@@ -13,7 +13,7 @@ All business logic is delegated to the respective microservice modules:
     - models.py   → Pydantic validation
     - memory.py   → Session state + ChromaDB
     - agent.py    → Gemini LLM + tool declarations
-    - security.py → Command threat classification + subprocess execution
+    - device/    → Local Mac capability boundary
 """
 
 import base64
@@ -22,11 +22,21 @@ import logging
 import os
 import re
 import secrets
-import subprocess
+from urllib.parse import urlsplit, urlunsplit
+
+# aiohttp/OpenBB can create its shared TLS context while importing other
+# integrations. Configure the virtual environment CA bundle before those
+# imports so macOS framework Python validates provider certificates correctly.
+try:
+    import certifi
+except ImportError:  # pragma: no cover - requirements pin certifi in production
+    certifi = None
+if certifi is not None:
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 import edge_tts
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -34,7 +44,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.logging_config import setup_logging
-from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse
+from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse, ResearchRunRequest
 from app.memory import (
     get_session,
     clear_pending_command,
@@ -45,8 +55,7 @@ from app.memory import (
     last_reply_tainted,
     get_recent_memories,
 )
-from app import gcal
-from app import inbox
+from app import gcal, inbox
 from app.agent import (
     get_gemini_response,
     get_vision_response,
@@ -55,11 +64,24 @@ from app.agent import (
     handle_memory_tool,
     search_web,
 )
-from app.security import evaluate_security_level, execute_shell_command
-from app.vision import capture_and_compress_screen
+from app.device.cloud import DeviceGateway
+from app.device.models import DeviceUnavailable
+from app.device.routes import router as device_router, validate_token_configuration
+from app.trading.research.jarvis_tools import (
+    JarvisResearchTools,
+    crypto_asset_from_research_question,
+    macro_context_payload,
+    render_research_response,
+    response_payload,
+)
+from app.trading.research.provider_status import provider_status_payload
 
 setup_logging()
 log = logging.getLogger(__name__)
+
+# The OpenBB client behind this adapter is lazy; construction itself performs
+# neither network access nor financial calculations.
+research_tools = JarvisResearchTools()
 
 # ─── Server Setup ─────────────────────────────────────────────────────────────
 
@@ -122,10 +144,6 @@ app.mount(
 
 TTS_VOICE = "de-DE-KillianNeural"
 
-# App names passed to AppleScript may only contain these characters.
-# Blocks quote/backslash breakouts into arbitrary AppleScript.
-_SAFE_APP_NAME = re.compile(r"^[A-Za-z0-9 ._\-]{1,64}$")
-
 # Markdown links [text](url) → keep just the visible text.
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
 # Bare URLs the model may cite (grounding answers love these); TTS would spell
@@ -146,6 +164,21 @@ def _clean_for_tts(text: str) -> str:
 
 API_TOKEN = os.environ.get("JARVIS_API_TOKEN", "")
 
+# The cloud process owns only the durable device-intent queue.  The Mac agent
+# is the sole process that imports local security, AppleScript, shell, or
+# screenshot implementations.
+device_gateway = DeviceGateway(
+    vision_analyzer=lambda prompt, image: get_vision_response(prompt, image),
+)
+app.state.device_gateway = device_gateway
+app.state.jarvis_api_token = lambda: API_TOKEN
+app.state.jarvis_device_token = lambda: os.environ.get("JARVIS_DEVICE_TOKEN", "")
+# Fail during configuration rather than allowing one secret to cross the
+# browser/device trust boundary.  Route-level checks remain as a fail-closed
+# guard for applications that mount the router independently.
+validate_token_configuration(API_TOKEN, os.environ.get("JARVIS_DEVICE_TOKEN", ""))
+app.include_router(device_router)
+
 _LOCALHOST_ADDRS = {"127.0.0.1", "::1"}
 
 if not API_TOKEN:
@@ -165,6 +198,12 @@ async def verify_token(request: Request) -> None:
     """
     if not API_TOKEN:
         client_host = request.client.host if request.client else ""
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.removeprefix("Bearer ").strip():
+            raise HTTPException(
+                status_code=401,
+                detail="Bearer token requires JARVIS_API_TOKEN on the server.",
+            )
         if client_host not in _LOCALHOST_ADDRS:
             raise HTTPException(
                 status_code=401,
@@ -215,6 +254,8 @@ async def _build_response(
     text: str,
     action: str = "none",
     generate_audio: bool = True,
+    research_payload: dict | None = None,
+    device_action: dict | None = None,
 ) -> dict:
     """
     Build the standard JSON response dict with optional TTS audio.
@@ -234,7 +275,80 @@ async def _build_response(
         "jarvis_response": text,
         "audio_base64": audio_b64,
         "action_taken": action,
+        "research_payload": research_payload,
+        "device_action": device_action,
     }
+
+
+def _device_json(value: object) -> dict | None:
+    """Serialize a cloud device contract without leaking opaque internals."""
+
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    return value if isinstance(value, dict) else None
+
+
+async def _dispatch_device_action(
+    *,
+    action_type: str,
+    payload: str,
+    tainted: bool = False,
+    requires_approval: bool = False,
+) -> tuple[str, str, dict | None]:
+    """Queue one local capability and wait only a bounded amount of time.
+
+    The cloud never executes the payload.  If the agent is offline this returns
+    a structured unavailable result immediately; otherwise the short wait lets
+    a connected agent complete safe actions without making research/chat
+    availability depend on a Mac heartbeat.
+    """
+
+    queued = device_gateway.queue_action(
+        action_type,
+        payload,
+        tainted=tainted,
+        requires_approval=requires_approval,
+    )
+    if isinstance(queued, DeviceUnavailable):
+        return (
+            "Der Mac-Agent ist gerade nicht verfügbar. Die Aktion wurde nicht ausgeführt.",
+            "device_unavailable",
+            _device_json(queued),
+        )
+
+    lifecycle = device_gateway.wait_for_result(queued.action_id, timeout=0.25)
+    if lifecycle is None:
+        return (
+            "Die Aktion wurde an den Mac-Agenten übergeben und wartet auf seinen Status.",
+            "device_queued",
+            _device_json(queued),
+        )
+    if lifecycle.unavailable is not None:
+        return (
+            "Der Mac-Agent ist gerade nicht verfügbar. Die Aktion wurde nicht ausgeführt.",
+            "device_unavailable",
+            _device_json(lifecycle),
+        )
+    if lifecycle.result is not None:
+        if lifecycle.analysis:
+            return lifecycle.analysis, "vision_screenshot_analyzed", _device_json(lifecycle)
+        result = lifecycle.result
+        if result.status == "succeeded":
+            return result.output or "Die Aktion wurde ausgeführt.", result.action or "device_action_succeeded", _device_json(lifecycle)
+        return result.error or "Die Aktion konnte nicht ausgeführt werden.", "device_action_failed", _device_json(lifecycle)
+    if lifecycle.status == "awaiting_approval":
+        return (
+            "Der Mac-Agent benötigt eine Bestätigung für diese Aktion.",
+            "device_approval_required",
+            _device_json(lifecycle),
+        )
+    return (
+        "Die Aktion wurde an den Mac-Agenten übergeben und wartet auf seinen Status.",
+        "device_queued",
+        _device_json(lifecycle),
+    )
 
 
 # ─── Routes ───────────────────────────────────────────────────────────────────
@@ -247,6 +361,43 @@ async def get_index():
     if not os.path.exists(index_path):
         return {"error": "index.html nicht im Ordner app/static gefunden!"}
     return FileResponse(index_path)
+
+
+@app.get("/config.js")
+async def get_frontend_config():
+    """Serve the runtime API origin without allowing browser caching."""
+    configured = os.environ.get("JARVIS_FRONTEND_API_BASE_URL", "").strip()
+    api_base_url = ""
+    if configured:
+        try:
+            if any(char.isspace() or ord(char) < 0x20 for char in configured):
+                raise ValueError("whitespace")
+            parsed = urlsplit(configured)
+            if (
+                parsed.scheme.lower() not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or "?" in configured
+                or "#" in configured
+                or not parsed.hostname
+                or parsed.path not in {"", "/"}
+            ):
+                raise ValueError("invalid URL form")
+            parsed.port  # Trigger validation for malformed ports.
+            api_base_url = urlunsplit(
+                (parsed.scheme.lower(), parsed.netloc, "", "", "")
+            )
+        except (TypeError, ValueError):
+            log.warning(
+                "Invalid JARVIS_FRONTEND_API_BASE_URL; using same-origin frontend API requests"
+            )
+    script = "window.JARVIS_CONFIG = { apiBaseUrl: " + json.dumps(api_base_url) + " };"
+    return Response(
+        content=script,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/sw.js")
@@ -281,6 +432,41 @@ async def recent_memories(request: Request) -> RecentMemoriesResponse:
     return RecentMemoriesResponse(memories=get_recent_memories(n=5))
 
 
+@app.get("/api/research/providers", dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def research_provider_status(request: Request) -> dict[str, list[dict[str, object]]]:
+    """Expose non-secret OpenBB provider readiness for the local research UI."""
+    return provider_status_payload()
+
+
+@app.get("/api/research/macro", dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def research_macro_context(request: Request) -> dict[str, list[dict]]:
+    """Return a compact canonical macro context without invoking Gemini."""
+    return macro_context_payload(research_tools.orchestrator.canonical_service)
+
+
+@app.post("/api/research/run", response_model=ChatResponse, dependencies=[Depends(verify_token)])
+@limiter.limit("20/minute")
+async def run_research_workflow(request: Request, research: ResearchRunRequest) -> dict:
+    """Run a validated read-only research workflow without relying on LLM routing."""
+    if research.mode == "asset":
+        name, arguments = "research_asset", {"asset": research.asset, "timeframe": research.timeframe}
+    elif research.mode == "compare":
+        name, arguments = "compare_assets", {"left_asset": research.asset, "right_asset": research.benchmark, "timeframe": research.timeframe}
+    elif research.mode == "history":
+        name, arguments = "research_history", {"asset": research.asset, "timeframe": research.timeframe}
+    else:
+        name, arguments = "analyze_relationship", {"asset": research.asset, "benchmark": research.benchmark, "timeframe": research.timeframe, "analysis": research.analysis}
+    response = research_tools.dispatch(name, arguments)
+    return await _build_response(
+        render_research_response(response),
+        action=f"finance_research:{name}",
+        research_payload=response_payload(response),
+        generate_audio=False,
+    )
+
+
 @app.post("/api/chat", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
 async def chat_with_jarvis(request: Request, chat: ChatRequest):
@@ -298,7 +484,13 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
     session_id = chat.session_id
     session = get_session(session_id)
 
-    async def respond(text: str, action: str = "none", tainted: bool = False) -> dict:
+    async def respond(
+        text: str,
+        action: str = "none",
+        tainted: bool = False,
+        research_payload: dict | None = None,
+        device_action: dict | None = None,
+    ) -> dict:
         """Record the exchange in session history, then build the response.
 
         `tainted` marks replies built from externally-sourced content (screen
@@ -306,7 +498,12 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         forced through HitL — see last_reply_tainted.
         """
         record_turn(session_id, user_text, text, tainted=tainted)
-        return await _build_response(text=text, action=action)
+        return await _build_response(
+            text=text,
+            action=action,
+            research_payload=research_payload,
+            device_action=device_action,
+        )
 
     try:
         # ──────────────────────────────────────────────────────────────────
@@ -350,20 +547,43 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                         action=f"calendar_event_created: {pending_display}",
                     )
 
-                # Default: approved shell command → execute with force=True.
-                output = execute_shell_command(pending_cmd, force=True)
-                response_text = (
-                    f"Verstanden. Befehl wird ausgeführt.\n\n"
-                    f"Ergebnis:\n{output}"
-                )
+                # Legacy pending shell commands are no longer executed in the
+                # cloud.  New device approvals arrive through the explicit
+                # action-id API; this branch only handles a pending id that a
+                # prior compatible session stored.
+                if pending_type and pending_type.startswith("device:"):
+                    action_id = pending_type.split(":", 1)[1]
+                    try:
+                        lifecycle = device_gateway.decide(action_id, approved=True)
+                    except (KeyError, ValueError) as exc:
+                        return await respond(
+                            text="Die ausstehende Geräteaktion ist nicht mehr verfügbar.",
+                            action="device_action_unavailable",
+                        )
+                    return await respond(
+                        text="Verstanden. Der Mac-Agent erhält die bestätigte Aktion.",
+                        action="device_approval_accepted",
+                        device_action=_device_json(lifecycle),
+                    )
                 return await respond(
-                    text=response_text,
-                    action=f"hitl_approved: {pending_cmd}",
+                    text="Diese lokale Aktion stammt noch aus dem alten Sitzungsformat. Bitte erneut anfordern.",
+                    action="device_legacy_pending",
                 )
 
             elif intent == "DENY":
                 # User hat abgelehnt → Aktion verwerfen
                 clear_pending_command(session_id)
+                if pending_type and pending_type.startswith("device:"):
+                    action_id = pending_type.split(":", 1)[1]
+                    try:
+                        lifecycle = device_gateway.decide(action_id, approved=False, reason="user denied")
+                    except (KeyError, ValueError):
+                        lifecycle = None
+                    return await respond(
+                        text="Alles klar. Wurde abgebrochen. Ich führe nichts aus.",
+                        action="device_approval_denied",
+                        device_action=_device_json(lifecycle),
+                    )
                 return await respond(
                     text="Alles klar. Wurde abgebrochen. Ich führe nichts aus.",
                     action="hitl_denied",
@@ -383,6 +603,26 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 2: LLM Call — Send to Gemini
         # ──────────────────────────────────────────────────────────────────
+        # Explicit BTC/ETH performance requests are a bounded read-only
+        # research workflow. Route them deterministically so the chat model
+        # cannot incorrectly claim that crypto research is unavailable.
+        crypto_asset = crypto_asset_from_research_question(user_text)
+        if crypto_asset:
+            try:
+                research_response = research_tools.research_asset(asset=crypto_asset)
+                return await respond(
+                    text=render_research_response(research_response),
+                    action="finance_research:research_asset",
+                    tainted=False,
+                    research_payload=response_payload(research_response),
+                )
+            except Exception as e:
+                log.error("Krypto-Finanzrecherche %s fehlgeschlagen: %s", crypto_asset, e)
+                return await respond(
+                    text="Die Krypto-Finanzrecherche ist gerade nicht verfügbar.",
+                    action="finance_research_error",
+                )
+
         log.debug("User-Input an Gemini: %r", user_text)
 
         try:
@@ -429,135 +669,39 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                     if fc.name == "execute_mac_command":
                         action_type = fc.args.get("action_type", "")
                         payload = fc.args.get("payload", "")
-
-                        # ── 3a: open_app → Direct execution via osascript ──
-                        if action_type == "open_app":
-                            # Strict allowlist on the app name: anything with
-                            # quotes/backslashes could break out of the
-                            # AppleScript string and run arbitrary script,
-                            # bypassing the security router entirely.
-                            if not _SAFE_APP_NAME.match(payload):
-                                return await respond(
-                                    text=(
-                                        f"Den App-Namen '{payload}' habe ich "
-                                        f"abgelehnt — er enthält unzulässige Zeichen."
-                                    ),
-                                    action="open_app_rejected",
-                                )
-                            try:
-                                subprocess.run(
-                                    [
-                                        "osascript",
-                                        "-e",
-                                        f'tell application "{payload}" to activate',
-                                    ],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                )
-                                response_text = f"Erledigt. {payload} wurde geöffnet."
-                                return await respond(
-                                    text=response_text,
-                                    action=f"open_app: {payload}",
-                                )
-                            except subprocess.TimeoutExpired:
-                                return await respond(
-                                    text=f"Timeout beim Öffnen von {payload}.",
-                                    action="open_app_timeout",
-                                )
-                            except OSError as e:
-                                return await respond(
-                                    text=f"Fehler beim Öffnen von {payload}: {e}",
-                                    action="open_app_error",
-                                )
-
-                        # ── 3b: shell_command → Security router ────────────
-                        elif action_type == "shell_command":
-                            threat_level = evaluate_security_level(payload)
-
-                            # Indirect-injection guard: if the previous reply
-                            # came from a screenshot / web search / recalled
-                            # memory, a shell command proposed now may have been
-                            # planted by injected text — force HitL regardless
-                            # of the command's own threat level.
-                            tainted_context = last_reply_tainted(session_id)
-                            log.info(
-                                "Security: cmd=%r → threat_level=%s tainted_ctx=%s",
-                                payload, threat_level, tainted_context,
-                            )
-
-                            if threat_level >= 2 or tainted_context:
-                                # DANGEROUS (or injection-suspect): ask first.
-                                set_pending_command(session_id, payload)
-
-                                if tainted_context and threat_level < 2:
-                                    warning_text = (
-                                        f"Sicherheitshinweis: Der Befehl '{payload}' "
-                                        f"folgt direkt auf extern gelesene Inhalte "
-                                        f"(Screenshot/Web/Gedächtnis). Zur Sicherheit "
-                                        f"frage ich nach — soll ich ihn ausführen? "
-                                        f"Bestätige mit 'Ja' oder sage 'Nein'."
-                                    )
-                                else:
-                                    warning_text = (
-                                        f"Achtung! Der Befehl '{payload}' wurde als "
-                                        f"potenziell gefährlich eingestuft (Stufe {threat_level}). "
-                                        f"Soll ich ihn trotzdem ausführen? "
-                                        f"Bestätige mit 'Ja' oder sage 'Nein' zum Abbrechen."
-                                    )
-                                return await respond(
-                                    text=warning_text,
-                                    action=f"hitl_pending: {payload}",
-                                )
-                            else:
-                                # SAFE: Execute immediately
-                                output = execute_shell_command(payload)
-                                response_text = (
-                                    f"Befehl ausgeführt.\n\nErgebnis:\n{output}"
-                                )
-                                return await respond(
-                                    text=response_text,
-                                    action=f"shell_executed: {payload}",
-                                )
-
-                        else:
+                        if action_type not in {"open_app", "shell_command"}:
                             return await respond(
                                 text=f"Unbekannter Aktionstyp: {action_type}",
                                 action="unknown_action_type",
                             )
+                        # Threat classification remains on the Mac agent.  A
+                        # tainted cloud context is carried as a force-approval
+                        # hint; the agent independently reclassifies every
+                        # shell command before execution.
+                        tainted_context = last_reply_tainted(session_id)
+                        text, action, device_action = await _dispatch_device_action(
+                            action_type=action_type,
+                            payload=str(payload),
+                            tainted=tainted_context,
+                            requires_approval=tainted_context,
+                        )
+                        return await respond(
+                            text=text,
+                            action=action,
+                            device_action=device_action,
+                        )
 
                     elif fc.name == "take_screenshot":
-                        log.info("Vision: nehme Screenshot auf")
-                        try:
-                            image_bytes = capture_and_compress_screen()
-                        except (PermissionError, FileNotFoundError) as e:
-                            return await respond(
-                                text=str(e),
-                                action="screenshot_failed",
-                            )
-                        except Exception as e:
-                            return await respond(
-                                text=f"Unerwarteter Fehler beim Screenshot: {e}",
-                                action="screenshot_error",
-                            )
-
-                        log.info("Vision: Screenshot erstellt, sende an Gemini Vision")
-
-                        try:
-                            vision_text = get_vision_response(user_text, image_bytes)
-                            if not vision_text:
-                                vision_text = "Ich konnte das Bild leider nicht auswerten."
-                            return await respond(
-                                text=vision_text,
-                                action="vision_screenshot_analyzed",
-                                tainted=True,  # screen content may carry injected text
-                            )
-                        except Exception as e:
-                            log.error("Vision Bildanalyse fehlgeschlagen: %s", e)
-                            return await respond(
-                                text="Die Bildanalyse ist leider fehlgeschlagen.",
-                                action="vision_analysis_error",
-                            )
+                        text, action, device_action = await _dispatch_device_action(
+                            action_type="take_screenshot",
+                            payload=user_text,
+                        )
+                        return await respond(
+                            text=text,
+                            action=action,
+                            tainted=(action == "vision_screenshot_analyzed"),
+                            device_action=device_action,
+                        )
 
                     # ── Web search (Google Search grounding) ────────────────
                     elif fc.name == "web_search":
@@ -635,18 +779,15 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             action=f"hitl_pending: {display}",
                         )
 
-                    # ── Task inbox: capture ─────────────────────────────────
+                    # ── Task inbox ──────────────────────────────────────────
                     elif fc.name == "capture_task":
                         result = inbox.add_task(str(fc.args.get("task", "") or ""))
                         return await respond(text=result, action="task_captured")
 
-                    # ── Task inbox: list open tasks ─────────────────────────
                     elif fc.name == "list_tasks":
                         return await respond(
                             text=inbox.list_tasks(),
                             action="task_list",
-                            # Tasks are the user's own dictated text, not
-                            # externally-sourced — no injection taint.
                         )
 
                     # ── Memory tools (save/recall/stats) ────────────────────
@@ -669,6 +810,31 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                             return await respond(
                                 text="Beim Zugriff auf mein Gedächtnis ist etwas schiefgelaufen.",
                                 action="memory_error",
+                            )
+
+                    # ── Finance research (strictly read-only, Phase 7) ─────
+                    elif fc.name in {"research_asset", "compare_assets", "research_history", "analyze_relationship"}:
+                        try:
+                            research_response = research_tools.dispatch(fc.name, dict(fc.args or {}))
+                            return await respond(
+                                text=render_research_response(research_response),
+                                action=f"finance_research:{fc.name}",
+                                # Provider-returned text is retained as data in the
+                                # structured result and never re-enters the prompt.
+                                tainted=False,
+                                research_payload=response_payload(research_response),
+                            )
+                        except (TypeError, ValueError) as e:
+                            log.info("Ungültige Finanzrecherche-Anfrage %s: %s", fc.name, e)
+                            return await respond(
+                                text="Die Finanzrecherche-Anfrage ist unvollständig oder ungültig.",
+                                action="finance_research_invalid",
+                            )
+                        except Exception as e:
+                            log.error("Finanzrecherche %s fehlgeschlagen: %s", fc.name, e)
+                            return await respond(
+                                text="Die Finanzrecherche ist gerade nicht verfügbar.",
+                                action="finance_research_error",
                             )
 
         # ──────────────────────────────────────────────────────────────────

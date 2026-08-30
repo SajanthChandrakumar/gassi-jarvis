@@ -1,20 +1,25 @@
-# 1. Wir nutzen ein offizielles, extrem schlankes Python-Image als Basis
+# Cloud runtime: Mac capability code is excluded by .dockerignore.
 FROM python:3.13-slim
 
-# 2. Wir setzen das Arbeitsverzeichnis im Container
 WORKDIR /app
 
-# 3. Wir kopieren ERST die Einkaufsliste in den Container...
-COPY requirements.txt .
+# Install only the cloud dependency set. The tested OpenBB and Uvicorn pins
+# are intentionally repeated in requirements-cloud.txt.
+COPY requirements-cloud.txt .
 
-# 4. ...und installieren die Pakete (ohne unnötigen Cache-Müll zu behalten)
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --disable-pip-version-check -r requirements-cloud.txt \
+    && addgroup --system --gid 10001 jarvis \
+    && adduser --system --uid 10001 --ingroup jarvis jarvis \
+    && mkdir -p /data/chroma /data/sessions /data/device \
+    && chown -R jarvis:jarvis /app /data
 
-# 5. JETZT kopieren wir unseren restlichen Code (main.py, index.html) rein
-COPY . .
+# The build context deliberately omits Mac executor/security/vision and
+# launchd files. Copying only app also keeps local tests, env examples, and
+# compatibility launchers out of the image.
+COPY --chown=jarvis:jarvis app ./app
 
-# 6. Wir öffnen Port 8000 für die Außenwelt
 EXPOSE 8000
 
-# 7. Der Befehl, der ausgeführt wird, wenn der Container startet
+# Never run the cloud service as root.
+USER jarvis:jarvis
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

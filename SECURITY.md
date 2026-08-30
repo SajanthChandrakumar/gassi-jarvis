@@ -1,111 +1,213 @@
-# Security Model
+# Security model
 
-Gassi-Jarvis is a **single-user, self-hosted** assistant that runs shell
-commands and captures the screen on the machine it runs on, driven by an LLM.
-That makes the security posture the most important part of the project. This
-document describes the threat model, the layered defenses, their known limits,
-and how to report an issue.
+Gassi-Jarvis is a single-user, self-hosted assistant. The browser, cloud, and
+Mac agent are separate trust zones, but the cloud and its bearer tokens remain
+part of the approval trust base. This is a personal research project, not a
+production-hardened product.
 
-> **Disclaimer:** this is a personal research project, not a production-hardened
-> product. Run it on your own machine, with a strong token, behind a private
-> tunnel — and read [`app/security.py`](app/security.py) before trusting it.
+## Trust boundaries
 
----
+### Frontend
 
-## What we defend
+The PWA is an untrusted client. It sends user requests only to the configured
+FastAPI origin and authenticates with `JARVIS_API_TOKEN`. It has no route,
+credential, or network path to the Mac agent. The token is held locally for a
+12-hour TTL; a static-host `config.js` contains only a validated HTTP(S)
+origin and is served without caching.
 
-The backend is reachable from the internet through a tunnel, so the design
-assumes an attacker who can reach `/api/chat` and who can influence content the
-model reads (a web page, a screenshot, a previously stored memory). The assets
-worth protecting are: **arbitrary command execution on the host**, **the user's
-files and secrets**, and **the bearer token**.
+### Cloud
 
----
+The cloud token-gates frontend routes and owns Gemini, memory, Calendar,
+deterministic research, and a durable single-device queue. It must not import
+or execute the local shell classifier, AppleScript, screenshot, or launchd
+implementation. `JARVIS_DEVICE_TOKEN` is accepted only by the outbound-agent
+poll/event routes. The cloud queue stores action intent and result metadata,
+not screenshot bytes.
 
-## Layered defenses
+### Mac agent
 
-### 1. Authentication & transport
-- **Bearer token** (`JARVIS_API_TOKEN`) compared with `secrets.compare_digest`
-  (constant-time). If unset, the API silently downgrades to **localhost-only**.
-- **Token TTL on the client**: the PWA caches the token for 12 hours, so a
-  stolen unlocked phone loses access by the next day.
-- **Rate limiting** (SlowAPI, 20/min) keyed on the real client via
-  `X-Forwarded-For` behind the tunnel.
-- **CORS allowlist** (`JARVIS_ALLOWED_ORIGINS`) so a random site the user visits
-  can't read responses.
-- **Topology**: Mac → ngrok/Tailscale (HTTPS) → phone. The Mac never opens a
-  public port directly.
+The Mac process is the only local capability boundary. It makes outbound
+HTTPS requests (loopback HTTP is allowed only for the explicit local
+compatibility runner), validates the configured device identity, stores the
+delivered payload before execution, reclassifies shell commands locally, and
+starts no listener. Its local SQLite file preserves payload hashes,
+decisions, terminal results, and replay tombstones.
 
-### 2. Command threat classification (`security.py`)
-Every shell command the model proposes is parsed and rated:
+There is no frontend-to-agent path. A user token cannot poll the agent, and a
+device token cannot read frontend routes.
 
-| Level | Meaning | Examples | Action |
-|-------|---------|----------|--------|
-| 0 | Harmless | `echo`, `date`, `whoami` | run |
-| 1 | Read-only | `ls`, `cat`, `pwd`, `find` | run, unless a sensitive path |
-| 2 | Dangerous / unknown | `rm`, `sudo`, `curl`, pipes, `$( )`, unknown cmd, sensitive-path read | **HitL** |
+## Authentication and transport
 
-Additional guards:
-- **Shell metacharacters** (`|`, `>`, `;`, `&&`, backticks, `$(`, `${`, newlines)
-  force Level 2 — no command chaining slips through.
-- **Sensitive paths** blocked at Level 1: `~/.ssh`, `~/.aws`, `~/Library/Cookies`,
-  `~/Library/Keychains`, `~/Library/Messages`, `/etc/passwd`, `*.pem`, and more.
-- **`find` argument inspection**: `-exec`/`-delete` and path-valued flags
-  (`-name id_rsa`) are caught, not just the base command.
-- **App launches** go through a strict regex before `osascript`, so an app name
-  can't break out into arbitrary AppleScript.
+- `JARVIS_API_TOKEN` is the frontend/user bearer. It protects chat, research,
+  memory, device status, action status, and approval decisions. If unset,
+  frontend routes retain the local-development behavior of accepting only
+  localhost requests.
+- `JARVIS_DEVICE_TOKEN` is a separate bearer for
+  `POST /api/device-agent/poll` and
+  `POST /api/device-agent/actions/{action_id}/events`. It is never embedded in
+  the PWA, `config.js`, Compose YAML, plist, or committed examples.
+  It cannot call the frontend approval-decision route, but a compromised
+  device token can forge authenticated agent events/results for known action
+  IDs.
+- The frontend's `JARVIS_API_TOKEN` is the credential allowed to submit an
+  approval decision to the cloud. A decision carries `action_id`, `approved`,
+  optional `reason`, and cloud-recorded `decided_at`; the browser never
+  resends executable payload text.
+- `JARVIS_DEVICE_ID` defaults to `local-mac` and identifies the one supported
+  Mac. Poll body and `X-Jarvis-Device-ID` mismatches are rejected.
+- Remote agent URLs must be HTTPS and cannot contain URL credentials. HTTP is
+  accepted only for `localhost`, `127.0.0.1`, or `::1` in local compatibility
+  mode.
+- CORS (`JARVIS_ALLOWED_ORIGINS`) limits which browser origins can read
+  responses; it is not authentication. Tailscale Serve identity/app-capability
+  headers describe transport context; they do not replace either Jarvis
+  bearer.
+- SlowAPI limits `/api/chat`, `/api/research/run`, and the research status
+  routes to 20 requests/minute; `/api/memories/recent` is 10/minute. Behind a
+  tunnel, `app.main` keys these limits on the leftmost `X-Forwarded-For`
+  address so separate clients do not share the loopback bucket. Run uvicorn
+  with `--forwarded-allow-ips` set only to the trusted tunnel/proxy addresses;
+  `X-Forwarded-For` is spoofable if an untrusted client can reach the listener,
+  so it is not a hard brute-force defense. The bearer token remains the wall.
+- Keep both env files outside the repository and mode `0600`. Rotate the two
+  tokens independently after an incident.
 
-### 3. Human-in-the-Loop (HitL)
-Level-2 commands are queued as a `pending_command` and require an explicit
-spoken **"Ja"** on the next turn. The intent classifier runs at temperature 0.0
-and **fails closed**: `DENY` or ambiguous → the command is dropped. Queued
-commands **expire after 5 minutes** so a stale approval can't fire them.
+The default CORS allowlist is `http://localhost:8000` and
+`http://127.0.0.1:8000`; `JARVIS_FRONTEND_API_BASE_URL` is empty by default,
+which means same-origin browser requests. Examples use `CHANGE_ME`
+placeholders only; no real credentials are stored in the repository.
 
-### 4. Indirect-injection guard
-Replies built from **untrusted content** — screenshots, web-search results,
-recalled memories — are marked `tainted`. If the model proposes a shell command
-on the immediately following turn, it is forced through HitL regardless of its
-own threat level. This blocks the direct "read this → silently run that" attack.
+## Device action controls
 
-### 5. Execution sandboxing & secret hygiene
-- Commands run via `subprocess.run` with a timeout and a configurable working
-  directory (`JARVIS_SHELL_CWD`).
-- Screenshots write to a `tempfile.mkstemp` path (no symlink race).
-- `.env`, `jarvis_brain/`, and `jarvis_sessions.json` are git-ignored and
-  docker-ignored, so secrets and personal data never enter the repo or an image.
-- Internal exception text is never returned to the client.
+The cloud checks its heartbeat before creating an action. An agent is online
+only when its last poll is within 10 seconds. New requests observed as offline
+return `DeviceUnavailable` immediately and are not intentionally queued for
+surprise execution. The check is point-in-time: an already queued or leased
+action can race with disconnect, remain durable, have its lease reclaimed, and
+be redelivered later. The frontend's bounded polling timeout does not cancel a
+cloud action. The outbound poll interval is two seconds, a delivered action
+lease is 30 seconds, reconnect backoff is bounded at 30 seconds, and approval
+expires after 300 seconds.
 
----
+The cloud and local agent use typed action IDs and payload hashes:
 
-## Known limitations (honest)
+1. The cloud creates one `DeviceAction` for one configured device.
+2. The agent receives it through its authenticated poll, validates the device
+   ID, and stores the exact payload/hash before it can execute.
+3. The Mac classifier independently evaluates every shell command. Dangerous,
+   unknown, sensitive-path, metacharacter, or tainted commands require HitL;
+   classifier failure fails closed. Explicit `requires_approval` also cannot
+   lower the local requirement.
+4. The cloud receives `approval_required`, and the frontend submits a
+   `DeviceDecision` containing `action_id`, `approved`, optional `reason`, and
+   cloud-recorded `decided_at`. The browser never sends executable payload text
+   in this decision.
+5. An approved action executes the locally stored payload with the existing
+   executor. A denial produces a rejected result. A timeout or boot identity
+   change produces an expired result.
+6. The agent records the terminal result and replay tombstone before sending
+   the result event. Same-ID substitutions, conflicting decisions, and
+   conflicting terminal replays are rejected.
 
-- **`shell=True`** is the single point of failure: the classifier list is the
-  only thing between the model's output and `bash -c`. A missed token would be an
-  execution bypass. Argv-list execution would be strictly safer.
-- **Indirect injection is only mitigated, not solved.** A *delayed* attack
-  (tainted turn → innocuous turn → attack) is out of scope, by design, to avoid
-  forcing HitL on every command after a single screenshot.
-- **`X-Forwarded-For` is spoofable**, so rate limiting is not a hard
-  anti-brute-force guarantee — the token strength is what actually matters.
-- **The LLM chooses the commands.** Prompt injection resistance ultimately
-  depends on Gemini; the defenses above bound the blast radius, they don't make
-  the model incorruptible.
+The local monotonic approval deadline is tied to a boot/process identity. A
+restart therefore invalidates an old monotonic epoch instead of extending a
+pending approval. The cloud also expires its lifecycle view at the same TTL.
 
----
+## Shell and HitL threat levels
 
-## Recommendations for operators
+The existing [`app/security.py`](app/security.py) classifier remains the local
+authority:
 
-1. Set a long random `JARVIS_API_TOKEN` (`python -c "import secrets; print(secrets.token_urlsafe(32))"`).
-2. Prefer **Tailscale** over a public ngrok URL where possible.
-3. Point `JARVIS_SHELL_CWD` at a scratch directory if you don't want `$HOME`
-   reachable by default.
-4. Keep your phone's lockscreen strong — it's the last barrier behind the token TTL.
+| Level | Examples | Default |
+|---|---|---|
+| 0 | `echo`, `date`, `whoami` | Execute locally. |
+| 1 | `ls`, `pwd`, safe `cat`/`find` | Execute unless sensitive or tainted. |
+| 2 | `rm`, `sudo`, `curl`, unknown commands, sensitive reads | Require approval. |
 
----
+Pipes, redirects, command separators, shell substitutions, backticks, and
+newlines force level 2. Sensitive paths and dangerous `find` flags are
+inspected. App names pass a strict allowlist before AppleScript. The existing
+executor uses a configurable `JARVIS_SHELL_CWD`; point it at a scratch
+directory rather than a personal home directory where practical.
 
-## Reporting a vulnerability
+Screenshots, web-search output, calendar titles, and recalled memories are
+untrusted content. A reply built from them is marked tainted; a shell command
+proposed immediately afterward is forced through local HitL. This is a
+bounded indirect-injection mitigation, not a proof against delayed attacks.
 
-This is a personal project without a formal disclosure program. If you find an
-issue, please open a GitHub issue describing the problem (omit any live secrets),
-or contact the maintainer directly. Please don't file exploit details against
-someone else's running instance.
+## Cloud as approval relay: residual trust
+
+The Mac agent authenticates an approval as a cloud decision, not as a
+cryptographically verifiable human gesture. Therefore a compromised cloud,
+cloud database, or `JARVIS_API_TOKEN` with cloud access can enqueue actions and
+approve a pending dangerous action by ID. `JARVIS_DEVICE_TOKEN` cannot call
+the approval route, but it can forge authenticated agent events/results for
+known IDs. Local reclassification still prevents a dangerous command from
+executing without an approval state, and payload hashes prevent replacing an
+already stored payload under the same ID, but the agent cannot distinguish a
+malicious cloud approval from a human-originated one. The cloud, queue, and
+both credentials must be protected as part of HitL.
+
+## Screenshot and data handling
+
+Screenshot payloads are capped at 10 MiB decoded (with a bounded base64 input)
+at both agent and cloud boundaries. Bytes exist only in the capture/event/
+vision call path. They are not stored in agent SQLite, cloud SQLite,
+`jarvis_sessions.json`, ChromaDB, or application logs. Only optional returned
+text analysis is retained in the cloud lifecycle. Do not add request-body or
+exception logging around screenshot events.
+
+Cloud financial research is deterministic and read-only. Provider provenance,
+retrieval time, freshness, quality, unavailable sections, and explicit missing
+values remain visible. Gemini is not a calculation engine, recommender, or
+trading executor. ChromaDB and sessions are assistant state, never the
+financial source of truth. Research routes are cloud-only and never create
+device intents. Portfolio APIs and portfolio/trading execution are not
+implemented.
+
+## Deployment and permissions
+
+- Bind Compose to `127.0.0.1`; expose it through a private HTTPS tunnel.
+- Keep cloud and agent env files external and mode `0600`; do not put tokens in
+  frontend assets, Compose, plist, or the image.
+- On macOS grant only the agent's Python host **Screen Recording** permission
+  for `screencapture` and **Automation** permission for AppleScript app
+  activation. The cloud receives neither permission.
+- The cloud image runs as unprivileged `jarvis` and its build context excludes
+  Mac-only executor/security/vision/launchd material. This is a packaging
+  boundary, not a substitute for runtime authentication.
+- The committed LaunchAgent installer is opt-in and does not load launchd.
+  Review `deploy/launchd/mac-agent.env`, plist, and wrapper before loading.
+
+## Incident response and recovery
+
+1. If a token, cloud process, or Mac host is suspected, stop/unload the Mac
+   agent and rotate both tokens. Do not approve pending actions during
+   investigation.
+2. Inspect action IDs, statuses, decisions, and result metadata. Avoid copying
+   screenshot data; the implementation should not have persisted it.
+3. Restarting the cloud or agent does not rerun terminal actions: terminal
+   state is recorded before report delivery and replayed idempotently.
+4. A pending approval from a new Mac boot/process expires fail-closed. Preserve
+   the agent SQLite file during upgrades so hashes and tombstones survive.
+5. Back up cloud volumes and the local agent state before migration. A deleted
+   queue/state file cannot be reconstructed from the PWA; ask the user to
+   reissue any action whose lifecycle is unknown.
+
+## Known limitations
+
+- `app/security.py` still ultimately invokes shell execution through the
+  existing `shell=True` boundary. The classifier is the defense between model
+  output and the shell; a missed parser case would be serious.
+- The cloud approval relay is a trust base as described above; local HitL does
+  not provide independent human attestation.
+- The indirect-injection guard covers the immediately following shell turn,
+  not a delayed attack after unrelated conversation.
+- The system supports one configured device. Multi-device routing, device
+  enrollment/rotation, and hardware-backed approval are future work.
+- A cloud or agent outage returns explicit unavailable/expired states, but no
+  automatic action replay after a human-visible timeout is attempted.
+- Provider credentials are optional and research coverage can be partial,
+  stale, unsupported, or failed. No fallback value is fabricated.
+
+Report vulnerabilities without including live credentials or personal data.

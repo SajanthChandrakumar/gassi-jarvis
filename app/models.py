@@ -6,9 +6,9 @@ the frontend (Layer 1) and the FastAPI gateway (Layer 2).
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class MessagePayload(BaseModel):
@@ -65,12 +65,33 @@ class ChatResponse(BaseModel):
         jarvis_response: Jarvis' text answer.
         audio_base64: Base64-encoded MP3 of the TTS rendering (may be empty).
         action_taken: Machine-readable description of what the backend did.
+        research_payload: Canonical Phase-7 output for read-only research actions.
+        device_action: Optional cloud device lifecycle contract; local execution
+                       remains exclusively on the outbound Mac agent.
     """
 
     status: Literal["success"] = "success"
     jarvis_response: str
     audio_base64: str = ""
     action_taken: str = "none"
+    research_payload: dict[str, Any] | None = None
+    device_action: dict[str, Any] | None = None
+
+
+class ResearchRunRequest(BaseModel):
+    """Validated, LLM-free request from the Command Center workflow forms."""
+
+    mode: Literal["asset", "compare", "history", "relationship"]
+    asset: str = Field(..., min_length=1, max_length=16, pattern=r"^[A-Za-z0-9.\-]+$")
+    benchmark: str | None = Field(None, min_length=1, max_length=16, pattern=r"^[A-Za-z0-9.\-]+$")
+    timeframe: Literal["6m", "1y", "2y", "5y", "all"] = "1y"
+    analysis: Literal["correlation", "beta"] = "correlation"
+
+    @model_validator(mode="after")
+    def require_second_asset(self):
+        if self.mode in {"compare", "relationship"} and not self.benchmark:
+            raise ValueError("benchmark is required for comparison and relationship research")
+        return self
 
 
 class RecentMemoriesResponse(BaseModel):

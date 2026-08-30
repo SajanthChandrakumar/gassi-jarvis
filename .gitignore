@@ -17,8 +17,9 @@ venv/
 .venv/
 env/
 ENV/
-
 .env
+deploy/*.env
+deploy/launchd/*.env
 
 # Mac-spezifisches
 .DS_Store
@@ -32,6 +33,8 @@ ENV/
 
 # Lokale Datenbank
 jarvis_brain/
+jarvis_cloud.sqlite3*
+jarvis_device_agent.sqlite3*
 
 # Persistierte Session-States (enthalten Gesprächsverlauf)
 jarvis_sessions.json

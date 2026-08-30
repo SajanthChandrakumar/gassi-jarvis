@@ -222,15 +222,24 @@ def evaluate_security_level(command: str) -> int:
 EXECUTION_TIMEOUT_SECONDS: int = 15
 
 
-def _resolve_working_dir() -> str:
+def _resolve_working_dir(cwd: str | Path | None = None) -> str:
     """
-    Working directory for shell execution. Configurable via env var so the
-    home path of any single developer is never baked into the repo.
+    Working directory for shell execution. The device boundary requires an
+    explicit absolute existing directory; no home-directory fallback is used.
     """
-    return os.environ.get("JARVIS_SHELL_CWD") or os.path.expanduser("~")
+    configured = str(cwd) if cwd is not None else os.environ.get("JARVIS_SHELL_CWD", "")
+    path = Path(configured) if configured else None
+    if path is None or not path.is_absolute() or not path.is_dir():
+        raise ValueError("JARVIS_SHELL_CWD must be an existing absolute directory")
+    return str(path)
 
 
-def execute_shell_command(command: str, force: bool = False) -> str:
+def execute_shell_command(
+    command: str,
+    force: bool = False,
+    *,
+    cwd: str | Path | None = None,
+) -> str:
     """
     Execute a shell command in a sandboxed subprocess.
 
@@ -257,7 +266,7 @@ def execute_shell_command(command: str, force: bool = False) -> str:
             capture_output=True,
             text=True,
             timeout=EXECUTION_TIMEOUT_SECONDS,
-            cwd=_resolve_working_dir(),
+            cwd=_resolve_working_dir(cwd),
         )
 
         if result.returncode == 0:

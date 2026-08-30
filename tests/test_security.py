@@ -148,7 +148,8 @@ class TestExecutionGate:
         result = execute_shell_command("rm -rf /tmp/definitely-not-run")
         assert "[SECURITY]" in result
 
-    def test_harmless_command_executes(self):
+    def test_harmless_command_executes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("JARVIS_SHELL_CWD", str(tmp_path))
         result = execute_shell_command("echo jarvis-test")
         assert "jarvis-test" in result
 
