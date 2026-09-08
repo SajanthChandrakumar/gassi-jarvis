@@ -45,6 +45,16 @@ def test_editorial_shell_prioritizes_research_command_and_useful_empty_state() -
     assert ui.index('id="researchForm"') < ui.index('id="workspace"')
 
 
+def test_command_center_links_world_cup_predictor_safely() -> None:
+    html = UI_PATH.read_text(encoding="utf-8")
+
+    assert "WM 2026 Predictor" in html
+    assert (
+        '<a class="external-tool-link" href="https://wc2026-predictor-8skd.onrender.com/" '
+        'target="_blank" rel="noopener noreferrer">'
+    ) in html
+
+
 def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
     ui, css = _ui(), _css()
 
