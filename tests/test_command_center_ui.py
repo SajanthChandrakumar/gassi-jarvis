@@ -28,8 +28,8 @@ def _js() -> str:
 def test_command_center_loads_separate_native_assets() -> None:
     ui = _ui()
 
-    assert '<link rel="stylesheet" href="/static/styles.css">' in ui
-    assert '<script src="/static/app.js" defer></script>' in ui
+    assert '<link rel="stylesheet" href="/static/styles.css?v=9">' in ui
+    assert '<script src="/static/app.js?v=9" defer></script>' in ui
     assert "<style>" not in ui
     assert "<script>" not in ui
     assert CSS_PATH.is_file()
@@ -67,7 +67,7 @@ def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
 
 def test_service_worker_versions_every_command_center_asset() -> None:
     worker = (STATIC / "sw.js").read_text(encoding="utf-8")
-    for path in ("/", "/static/styles.css", "/static/app.js"):
+    for path in ("/", "/static/styles.css?v=9", "/static/app.js?v=9"):
         assert repr(path) in worker or f'"{path}"' in worker
 
 
@@ -77,6 +77,16 @@ def test_service_worker_leaves_api_and_runtime_config_on_the_network() -> None:
     assert "req.method !== 'GET' || url.pathname.startsWith('/api/')" in worker
     assert "url.pathname.startsWith('/api/')" in worker
     assert "config.js" not in worker
+
+
+def test_service_worker_refreshes_static_assets_before_cache_fallback() -> None:
+    worker = (STATIC / "sw.js").read_text(encoding="utf-8")
+
+    assert "caches.match(req).then((hit) => hit || fetch(req))" not in worker
+    assert "fetch(req)" in worker
+    assert ".then((response) =>" in worker
+    assert "cache.put(req, response.clone())" in worker
+    assert ".catch(() => caches.match(req))" in worker
 
 
 def test_frontend_loads_runtime_config_before_app_and_uses_one_api_url_helper() -> None:
@@ -242,6 +252,12 @@ def test_command_center_loads_canonical_macro_context() -> None:
     assert "loadMacroContext" in ui
     assert "apiFetch('/api/research/macro'" in ui
     assert "macro-grid" in ui
+    assert "data.countries" in ui
+    assert "macro-countries" in ui
+    assert "macro-country" in ui
+    assert "country.label" in ui
+    assert "10-year government yield" in ui
+    assert "Real GDP growth" in ui
     assert "Macro context" in ui
 
 

@@ -87,6 +87,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .external-tool-link strong, .external-tool-link small { display: block; }
 .external-tool-link strong { font-size: 12px; }
 .external-tool-link small { margin-top: 4px; color: var(--subtle); font-size: 10px; }
+.macro-section { grid-column: 1 / -1; }
+.macro-countries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
+.macro-country { min-width: 0; padding: 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.macro-country-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.macro-country-head h3 { margin: 0; font-size: 13px; }
+.macro-country-head span { color: var(--subtle); font-size: 10px; }
 .macro-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
 .macro-cell { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); }
 .macro-cell span, .macro-cell b, .macro-cell small { display: block; }
@@ -225,6 +231,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
   .mode-tabs button { flex: 0 0 auto; padding: 10px 18px 10px 0; margin-right: 18px; }
   .workspace-column { width: 100%; }
   .empty-workspace { grid-template-columns: 1fr; }
+  .macro-countries { grid-template-columns: 1fr; }
   .context-panel { width: 100%; grid-template-columns: 1fr; }
   .workflow-panel form { grid-template-columns: 1fr; }
   .finding-grid, .metric-grid { grid-template-columns: 1fr 1fr; }

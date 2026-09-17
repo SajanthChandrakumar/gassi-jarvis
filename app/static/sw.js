@@ -7,13 +7,14 @@
  *   - /api/* and any non-GET request: never touched, always hits the network.
  *   - Navigations: network-first, so a redeployed UI shows immediately;
  *     falls back to the cached shell only when offline.
- *   - /static/* assets: cache-first for speed.
+ *   - /static/* assets: network-first so updates appear immediately, with an
+ *     offline cache fallback.
  */
-const CACHE = 'jarvis-command-center-v7';
+const CACHE = 'jarvis-command-center-v9';
 const SHELL = [
     '/',
-    '/static/styles.css',
-    '/static/app.js',
+    '/static/styles.css?v=9',
+    '/static/app.js?v=9',
     '/static/manifest.json',
     '/static/icon-192.png',
     '/static/icon-512.png',
@@ -45,6 +46,15 @@ self.addEventListener('fetch', (event) => {
     }
 
     if (url.pathname.startsWith('/static/')) {
-        event.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
+        event.respondWith(
+            fetch(req)
+                .then((response) => {
+                    if (!response.ok) return response;
+                    return caches.open(CACHE).then((cache) =>
+                        cache.put(req, response.clone()).then(() => response)
+                    );
+                })
+                .catch(() => caches.match(req))
+        );
     }
 });
