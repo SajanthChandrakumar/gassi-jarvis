@@ -150,6 +150,35 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
 # them out letter by letter, so replace with a short spoken placeholder.
 _BARE_URL = re.compile(r"\b(?:https?://|www\.)\S+")
 
+_TASK_LIST_FALLBACK = re.compile(
+    r"^\s*(?:list|show)(?:\s+me)?\s+(?:my\s+)?(?:open\s+)?(?:tasks|to-?dos)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_TASK_CAPTURE_FALLBACK = re.compile(
+    r"^\s*(?:merke|notiere)(?:\s+mir)?\s+(?:als\s+)?(?:aufgabe|to-?do)\s*:\s*(?P<task>.+?)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_WEB_SEARCH_FALLBACK = re.compile(
+    r"^\s*(?:suche|such)(?:\s+bitte)?\s+(?:im|in\s+dem)\s+web\s+nach\s+(?P<query>.+?)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+_NAMED_WEB_SEARCH_FALLBACK = re.compile(
+    r"^\s*.*\bweb_search\b.*?\b(?:suche|such)\s+nach\s+(?P<query>.+?)\s*[.!?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _explicit_empty_response_fallback(user_text: str) -> tuple[str, str] | None:
+    """Recognize only explicit task or web-search requests after an empty LLM reply."""
+    if _TASK_LIST_FALLBACK.fullmatch(user_text):
+        return "task_list", ""
+    if match := _TASK_CAPTURE_FALLBACK.fullmatch(user_text):
+        return "task_captured", match.group("task").strip()
+    for pattern in (_WEB_SEARCH_FALLBACK, _NAMED_WEB_SEARCH_FALLBACK):
+        if match := pattern.fullmatch(user_text):
+            return "web_search", match.group("query").strip()
+    return None
+
 
 def _clean_for_tts(text: str) -> str:
     """Strip Markdown artifacts and URLs so Edge-TTS doesn't read them aloud."""
@@ -505,6 +534,25 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
             device_action=device_action,
         )
 
+    async def respond_with_web_search(query: str, *, include_history: bool = True) -> dict:
+        log.info("Web-Suche angefordert: %r", query)
+        try:
+            history = session["history"] if include_history else None
+            search_text = search_web(query, history=history)
+            if not search_text:
+                search_text = "Ich habe dazu online leider nichts Brauchbares gefunden."
+            return await respond(
+                text=search_text,
+                action=f"web_search: {query}",
+                tainted=True,
+            )
+        except Exception as e:
+            log.error("Web-Suche fehlgeschlagen: %s", e)
+            return await respond(
+                text="Die Websuche ist gerade fehlgeschlagen.",
+                action="web_search_error",
+            )
+
     try:
         # ──────────────────────────────────────────────────────────────────
         # STEP 1: HitL Interceptor — Check for pending dangerous commands
@@ -660,9 +708,11 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 3: Tool Executor — Handle function calls from Gemini
         # ──────────────────────────────────────────────────────────────────
+        saw_function_call = False
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.function_call:
+                    saw_function_call = True
                     fc = part.function_call
                     log.info("Tool Function Call: %s → %s", fc.name, fc.args)
 
@@ -706,24 +756,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                     # ── Web search (Google Search grounding) ────────────────
                     elif fc.name == "web_search":
                         query = fc.args.get("query", "").strip()
-                        log.info("Web-Suche angefordert: %r", query)
-                        try:
-                            search_text = search_web(query, history=session["history"])
-                            if not search_text:
-                                search_text = (
-                                    "Ich habe dazu online leider nichts Brauchbares gefunden."
-                                )
-                            return await respond(
-                                text=search_text,
-                                action=f"web_search: {query}",
-                                tainted=True,  # web results may carry injected text
-                            )
-                        except Exception as e:
-                            log.error("Web-Suche fehlgeschlagen: %s", e)
-                            return await respond(
-                                text="Die Websuche ist gerade fehlgeschlagen.",
-                                action="web_search_error",
-                            )
+                        return await respond_with_web_search(query)
 
                     # ── Calendar: read events ───────────────────────────────
                     elif fc.name == "get_calendar_events":
@@ -840,9 +873,19 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         # ──────────────────────────────────────────────────────────────────
         # STEP 4: Text Passthrough — No function calls, return LLM text
         # ──────────────────────────────────────────────────────────────────
-        response_text = response.text if response.text else "Ich konnte leider keine Antwort generieren."
+        response_text = response.text or ""
+        if not response_text and not saw_function_call:
+            fallback = _explicit_empty_response_fallback(user_text)
+            if fallback:
+                action, value = fallback
+                if action == "task_list":
+                    return await respond(text=inbox.list_tasks(), action=action)
+                if action == "task_captured":
+                    return await respond(text=inbox.add_task(value), action=action)
+                return await respond_with_web_search(value, include_history=False)
+
         return await respond(
-            text=response_text,
+            text=response_text or "Ich konnte leider keine Antwort generieren.",
             action="text_response",
         )
 
