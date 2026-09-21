@@ -17,6 +17,8 @@ calendar writes remain Human-in-the-Loop (HitL) gated.
 - Google Calendar reads and separately approved event creation.
 - Installable PWA research workspace with evidence, provenance, quality, and
   explicit missing-data states.
+- Side-by-side Switzerland and United States macro context with provider,
+  reporting period, and per-country unavailable states kept visible.
 
 ## Architecture at a glance
 
@@ -192,6 +194,16 @@ research workflow runs. A device response may contain `device_action` with an
 `action_id`; the browser polls its cloud lifecycle and submits decisions to the
 cloud. A decision contains `action_id`, `approved`, optional `reason`, and
 cloud-recorded `decided_at`; it never resends executable payload text.
+
+`GET /api/research/macro` is also deterministic and LLM-free. Its `countries`
+array contains Switzerland (`CH`) first and the United States (`US`) second;
+each group owns its `series` and `failures`. The top-level `series` and
+`failures` remain aliases of the US group for older clients. Provider failures
+stay explicit and are never replaced with placeholder numbers. See
+[`docs/openbb-research.md`](docs/openbb-research.md) for the configured series
+and limitations and
+[`docs/ui-phase-1-command-center.md`](docs/ui-phase-1-command-center.md) for
+the browser contract.
 
 ## Optional Homepage dashboard
 

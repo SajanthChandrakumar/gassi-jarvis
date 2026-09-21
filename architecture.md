@@ -97,6 +97,20 @@ The broader financial state contract is
 Portfolio, trading execution, recommendations, and portfolio APIs remain
 future/out of scope.
 
+### Country-grouped macro context
+
+`GET /api/research/macro` requests five bounded indicators for Switzerland and
+the United States through the canonical OpenBB service. The response adds a
+country-ordered `countries` collection (`CH`, then `US`), with independent
+`series` and `failures` for each group. The legacy top-level `series` and
+`failures` fields continue to expose the US group so existing clients do not
+break.
+
+The endpoint returns only provider observations and stable failure states. It
+does not infer a missing value, copy a value between countries, or use Gemini
+to calculate a macroeconomic figure. The PWA renders the two country groups
+side by side on wider screens and stacked on narrow screens.
+
 ### Mac capability zone
 
 `app/device/agent.py` is an outbound-only client. It opens no listener and

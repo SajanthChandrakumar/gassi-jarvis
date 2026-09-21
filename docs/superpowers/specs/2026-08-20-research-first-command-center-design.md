@@ -164,6 +164,11 @@ The canonical observation and retrieval dates remain distinct. EconDB is used
 only when it exposes a semantically equivalent series; otherwise the missing
 FRED series remains explicit.
 
+The implementation was extended on 2026-09-12 with a backward-compatible
+`countries` collection for Switzerland and the United States. The original
+table above remains the US contract; current country mappings and semantic
+limitations are documented in `docs/openbb-research.md`.
+
 ## Quality, errors, and provider state
 
 Provider failures are converted at the boundary into stable codes such as

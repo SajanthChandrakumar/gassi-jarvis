@@ -88,7 +88,7 @@ data.
 Provider state uses only `built_in`, `configured`, and `not_configured`.
 Configuration is not a liveness claim. Yahoo Finance, SEC, and EconDB are
 built in. FMP adds bounded profile, statements, metrics, estimates, and earnings
-coverage; FRED adds five US macro series; Tiingo is a price fallback. Benzinga
+coverage; FRED adds the configured US and Swiss macro series; Tiingo is a price fallback. Benzinga
 may be configured but is not in the current default route because the verified
 free-tier company-news response was empty. Any provider may still return an
 entitlement, rate-limit, empty-data, or endpoint error.
@@ -100,12 +100,29 @@ fall through to another provider.
 
 News is limited to three records that directly mention the ticker or a
 meaningful company-name token. Earnings uses exactly 14 days before through 30
-days after the request date and discards calendar rows for other symbols. Macro
-context consists of CPI inflation (`CPIAUCSL`, year-over-year percent),
-unemployment (`UNRATE`), the federal funds rate (`FEDFUNDS`), the 10-year
-Treasury yield (`DGS10`), and real-GDP growth (`GDPC1`, year-over-year percent).
-EconDB substitutes only semantically equivalent inflation, unemployment, and
-policy-rate series when FRED is unavailable.
+days after the request date and discards calendar rows for other symbols.
+
+Macro context requests the same five slots for two explicitly separated
+countries:
+
+| Country | Inflation | Unemployment | Policy-rate slot | 10-year yield | Real GDP growth |
+|---|---|---|---|---|---|
+| United States | `CPIAUCSL`, `pc1` | `UNRATE` | `FEDFUNDS` | `DGS10` | `GDPC1`, `pc1` |
+| Switzerland | `CP0000CHM086NEST`, `pc1` | `LRUNTTTTCHQ156S` | `IRSTCI01CHM156N` | `IRLTLT01CHM156N` | `CLVMNACSAB1GQCH`, `pc1` |
+
+The endpoint returns Switzerland first and the United States second. Each
+country has independent `series` and `failures`; the legacy top-level fields
+remain the US group. EconDB substitutes only semantically equivalent US
+inflation, unemployment, and policy-rate series when FRED is unavailable.
+
+The Swiss inflation slot is Eurostat HICP, the unemployment slot is the OECD
+labour-force measure, and GDP is transformed to year-over-year growth. These
+definitions must not be presented as the Swiss national CPI, SECO registered
+unemployment, or SECO quarter-over-quarter GDP. The configured Swiss
+`IRSTCI01CHM156N` series is an OECD call-money/interbank rate, not the official
+SNB policy-rate series; it can therefore be explicitly unavailable in the
+two-year request window. Jarvis does not fabricate an SNB value to fill that
+gap.
 
 ## Caching and limitations
 

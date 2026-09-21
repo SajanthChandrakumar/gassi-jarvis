@@ -23,10 +23,10 @@ below the main column. Mobile uses a single readable column, keeps the prompt
 immediately reachable, and has no horizontal overflow.
 
 The empty state exposes useful existing capabilities without fake market data:
-up to six locally saved reports, a local symbol watchlist, five canonical macro
-observations, provider configuration coverage, and the four validated research
-modes. Local records stay in `localStorage`; they are not financial truth and
-do not enter Jarvis sessions.
+up to six locally saved reports, a local symbol watchlist, two country-grouped
+macro panels with five slots each, provider configuration coverage, and the
+four validated research modes. Local records stay in `localStorage`; they are
+not financial truth and do not enter Jarvis sessions.
 
 ## Research rendering
 
@@ -56,11 +56,14 @@ only fields already present in the canonical response.
 `configured`, and `not_configured`. It never labels a credential as live,
 validates a key, or returns its value.
 
-`GET /api/research/macro` fetches five independent two-year scopes in parallel
-and returns only the latest observation for inflation, unemployment, policy
-rate, 10-year Treasury yield, and real-GDP growth. Every observation retains
+`GET /api/research/macro` fetches five independent two-year scopes for each of
+Switzerland and the United States and returns only the latest observation for
+inflation, unemployment, policy rate, 10-year government yield, and real-GDP
+growth. The `countries` collection keeps the groups and failures separate;
+legacy top-level fields still expose the US group. Every observation retains
 its unit, as-of date, source, freshness, and quality. Failures remain explicit;
-the UI never substitutes placeholder numbers.
+the UI never substitutes placeholder numbers. Wide layouts show the country
+panels side by side and narrow layouts stack them.
 
 ## Accessibility and delivery
 
