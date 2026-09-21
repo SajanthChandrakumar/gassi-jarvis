@@ -31,6 +31,9 @@ deploy/launchd/*.env
 .idea/
 *.swp
 
+# Lokale Projektkonfiguration
+.codex/obsidian-vault-path
+
 # Lokale Datenbank
 jarvis_brain/
 jarvis_cloud.sqlite3*
