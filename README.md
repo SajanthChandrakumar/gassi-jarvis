@@ -5,7 +5,7 @@ financial-research workspace. The installable vanilla PWA talks to FastAPI;
 macOS control is performed by one outbound-only Mac agent. Shell commands and
 calendar writes remain Human-in-the-Loop (HitL) gated.
 
-![Jarvis research workspace](docs/jarvis-pwa.png)
+![Jarvis research workspace](docs/screenshots/jarvis-workspace.png)
 
 ## Capabilities
 
@@ -19,6 +19,28 @@ calendar writes remain Human-in-the-Loop (HitL) gated.
   explicit missing-data states.
 - Side-by-side Switzerland and United States macro context with provider,
   reporting period, and per-country unavailable states kept visible.
+
+## Product tour
+
+The interface keeps observed values, source coverage, and limitations next to
+the research output. Values in these screenshots are time-specific provider
+observations, not fixtures or promises of current market data.
+
+### Asset comparison
+
+![Jarvis asset comparison report](docs/screenshots/jarvis-comparison-report.png)
+
+The detailed view keeps market snapshots, fundamentals, valuation, coverage,
+and source provenance together.
+
+![Jarvis comparison details and data coverage](docs/screenshots/jarvis-comparison-details.png)
+
+### Country-scoped macro context
+
+Switzerland and the United States are presented separately. Missing values
+remain explicit instead of being replaced with placeholders.
+
+![Jarvis Switzerland and United States macro context](docs/screenshots/jarvis-macro-context.png)
 
 ## Architecture at a glance
 
