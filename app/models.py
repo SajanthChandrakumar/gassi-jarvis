@@ -66,6 +66,8 @@ class ChatResponse(BaseModel):
         audio_base64: Base64-encoded MP3 of the TTS rendering (may be empty).
         action_taken: Machine-readable description of what the backend did.
         research_payload: Canonical Phase-7 output for read-only research actions.
+        device_action: Optional cloud device lifecycle contract; local execution
+                       remains exclusively on the outbound Mac agent.
     """
 
     status: Literal["success"] = "success"
@@ -73,6 +75,7 @@ class ChatResponse(BaseModel):
     audio_base64: str = ""
     action_taken: str = "none"
     research_payload: dict[str, Any] | None = None
+    device_action: dict[str, Any] | None = None
 
 
 class ResearchRunRequest(BaseModel):

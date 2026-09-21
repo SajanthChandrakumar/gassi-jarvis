@@ -1,7 +1,7 @@
 # Research-First Command Center and Free-Tier Data Design
 
-Date: 2026-08-20  
-Status: approved direction, implementation pending  
+Date: 2026-08-20
+Status: approved direction, implementation pending
 Scope: read-only Jarvis financial research and the Command Center
 
 ## Objective
@@ -163,6 +163,11 @@ Replace unlabeled absolute values with a compact, interpretable set:
 The canonical observation and retrieval dates remain distinct. EconDB is used
 only when it exposes a semantically equivalent series; otherwise the missing
 FRED series remains explicit.
+
+The implementation was extended on 2026-09-12 with a backward-compatible
+`countries` collection for Switzerland and the United States. The original
+table above remains the US contract; current country mappings and semantic
+limitations are documented in `docs/openbb-research.md`.
 
 ## Quality, errors, and provider state
 
@@ -330,4 +335,3 @@ or persist raw provider payloads.
 - React or another frontend framework;
 - background provider health polling;
 - LLM-based news relevance or financial calculations.
-

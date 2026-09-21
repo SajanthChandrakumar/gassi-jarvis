@@ -170,6 +170,40 @@ calendar_tool = types.Tool(
 )
 
 
+inbox_tool = types.Tool(
+    function_declarations=[
+        types.FunctionDeclaration(
+            name="capture_task",
+            description=(
+                "Speichert eine Aufgabe oder Notiz in der To-Do-Inbox des Users. "
+                "Nutze dies, wenn der User dir etwas zum Merken/Erledigen diktiert "
+                "(z.B. 'Notier: X', 'Erinner mich daran, Y zu machen', 'Setz Z auf "
+                "meine Liste'). Für flüchtige Fakten über den User nutze stattdessen "
+                "'save_memory' — 'capture_task' ist nur für konkrete To-Dos."
+            ),
+            parameters=types.Schema(
+                type=types.Type.OBJECT,
+                properties={
+                    "task": types.Schema(
+                        type=types.Type.STRING,
+                        description="Die Aufgabe in klaren Worten, z.B. 'Auth-Bug in Projekt X fixen'.",
+                    ),
+                },
+                required=["task"],
+            ),
+        ),
+        types.FunctionDeclaration(
+            name="list_tasks",
+            description=(
+                "Liest die offenen Aufgaben aus der To-Do-Inbox des Users vor. "
+                "Nutze dies, wenn der User nach seiner Aufgabenliste, seinen To-Dos "
+                "oder offenen Punkten fragt (z.B. 'Was steht auf meiner Liste?')."
+            ),
+        ),
+    ]
+)
+
+
 # Financial research is intentionally a small, read-only surface.  Gemini can
 # choose a high-level question type, but may not call provider/statistical
 # primitives or compose arbitrary calculation chains.
@@ -255,13 +289,15 @@ def _build_system_prompt() -> str:
         "3. VERGANGENHEIT NUTZEN: Bevor du Fragen zum User beantwortest, nutze IMMER 'recall_memory'. "
         "4. KALENDER: Für Fragen zu Terminen nutze 'get_calendar_events'. Zum Anlegen "
         "eines Termins nutze 'create_calendar_event' — der User bestätigt danach mündlich. "
-        "5. FINANZRECHERCHE: Nutze ausschließlich die vier Research-Tools für Finanzfragen. "
+        "5. AUFGABEN: Wenn der User dir ein To-Do diktiert ('notier', 'setz auf die Liste'), "
+        "nutze 'capture_task'. Fragt er nach seiner Liste, nutze 'list_tasks'. "
+        "6. FINANZRECHERCHE: Nutze ausschließlich die vier Research-Tools für Finanzfragen. "
         "research_asset unterstützt Aktien, ETFs und die kanonischen Kryptowährungen BTC und ETH. "
         "Eine Frage nach der Performance, Entwicklung oder Volatilität von BTC/ETH ist immer "
         "eine Finanzrecherche: rufe research_asset mit dem Ticker auf und behaupte niemals, "
         "dass Krypto nicht verfügbar sei oder ersetze die Research-Anfrage durch Websuche. "
         "Ihre strukturierten Resultate sind maßgeblich; erfinde keine Zahlen, Empfehlungen oder Kausalität. "
-        "6. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
+        "7. KEIN MARKDOWN IN DER SPRACHE: Vermeide zwingend Sternchen (*) oder Hashtags (#) "
         "in deiner Textantwort, da diese vom Audio-System (TTS) sonst laut vorgelesen werden. "
         "Sei ein mitdenkender Assistent, kein dummer Chatbot. Biete Lösungen an, bevor der User danach fragt."
     )
@@ -315,7 +351,7 @@ def get_gemini_response(
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=_build_system_prompt(),
-            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, calendar_tool, finance_research_tool, save_memory, recall_memory, get_memory_stats],
+            tools=[mac_controller_tool, take_screenshot_tool, web_search_tool, calendar_tool, inbox_tool, finance_research_tool, save_memory, recall_memory, get_memory_stats],
             temperature=0.1,
         ),
     )

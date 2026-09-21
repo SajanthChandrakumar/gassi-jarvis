@@ -18,6 +18,8 @@ venv/
 env/
 ENV/
 .env
+deploy/*.env
+deploy/launchd/*.env
 
 # Mac-spezifisches
 .DS_Store
@@ -31,10 +33,15 @@ ENV/
 
 # Lokale Datenbank
 jarvis_brain/
+jarvis_cloud.sqlite3*
+jarvis_device_agent.sqlite3*
 
 # Persistierte Session-States (enthalten Gesprächsverlauf)
 jarvis_sessions.json
 jarvis_sessions.json.tmp
+
+# Persönliche Task-Inbox
+jarvis_inbox.md
 
 # Google-Calendar-OAuth (Client-Secret + User-Token)
 gcal_credentials.json

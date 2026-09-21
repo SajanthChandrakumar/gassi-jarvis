@@ -1,0 +1,3 @@
+# Mac agent and local capability dependencies.
+pydantic==2.13.3
+Pillow==12.2.0

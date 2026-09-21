@@ -45,6 +45,14 @@ class MacroContextSpec:
     unit: str
 
 
+@dataclass(frozen=True, slots=True)
+class MacroCountry:
+    code: str
+    label: str
+    country: str
+    provider: str | None = None
+
+
 MACRO_CONTEXT = (
     MacroContextSpec("inflation", "CPIAUCSL", "pc1", "% YoY"),
     MacroContextSpec("unemployment", "UNRATE", None, "%"),
@@ -52,6 +60,19 @@ MACRO_CONTEXT = (
     MacroContextSpec("treasury_10y", "DGS10", None, "%"),
     MacroContextSpec("real_gdp_growth", "GDPC1", "pc1", "% YoY"),
 )
+
+MACRO_COUNTRIES = (
+    MacroCountry("CH", "Switzerland", "switzerland", "fred"),
+    MacroCountry("US", "United States", "united_states"),
+)
+
+SWISS_FRED_SERIES = {
+    "inflation": "CP0000CHM086NEST",
+    "unemployment": "LRUNTTTTCHQ156S",
+    "policy_rate": "IRSTCI01CHM156N",
+    "treasury_10y": "IRLTLT01CHM156N",
+    "real_gdp_growth": "CLVMNACSAB1GQCH",
+}
 
 
 def macro_context_payload(
@@ -62,13 +83,16 @@ def macro_context_payload(
     end_date = date.today()
     start_date = end_date - timedelta(days=730)
 
-    def fetch(spec: MacroContextSpec) -> tuple[str, dict]:
+    def fetch(request: tuple[MacroCountry, MacroContextSpec]) -> tuple[str, dict]:
+        country, spec = request
         try:
             item = to_jsonable(service.get_macro_series(
                 spec.key,
-                series_id=spec.series_id,
+                series_id=SWISS_FRED_SERIES.get(spec.key, spec.series_id) if country.code == "CH" else spec.series_id,
                 transform=spec.transform,
                 unit=spec.unit,
+                country=country.country,
+                provider=country.provider,
                 start_date=start_date,
                 end_date=end_date,
             ))
@@ -83,11 +107,24 @@ def macro_context_payload(
                 "provider": getattr(exc, "provider", None),
             }
 
-    with ThreadPoolExecutor(max_workers=min(5, len(specs) or 1)) as executor:
-        results = tuple(executor.map(fetch, specs))
-    series = [item for kind, item in results if kind == "series"]
-    failures = [item for kind, item in results if kind == "failure"]
-    return {"series": series, "failures": failures}
+    requests = tuple((country, spec) for country in MACRO_COUNTRIES for spec in specs)
+    with ThreadPoolExecutor(max_workers=min(10, len(requests) or 1)) as executor:
+        results = tuple(executor.map(fetch, requests))
+    countries = []
+    for index, country in enumerate(MACRO_COUNTRIES):
+        country_results = results[index * len(specs):(index + 1) * len(specs)]
+        countries.append({
+            "code": country.code,
+            "label": country.label,
+            "series": [item for kind, item in country_results if kind == "series"],
+            "failures": [item for kind, item in country_results if kind == "failure"],
+        })
+    united_states = countries[-1]
+    return {
+        "series": united_states["series"],
+        "failures": united_states["failures"],
+        "countries": countries,
+    }
 
 
 def create_default_orchestrator() -> ResearchOrchestrator:

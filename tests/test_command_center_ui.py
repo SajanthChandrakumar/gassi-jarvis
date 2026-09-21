@@ -28,8 +28,8 @@ def _js() -> str:
 def test_command_center_loads_separate_native_assets() -> None:
     ui = _ui()
 
-    assert '<link rel="stylesheet" href="/static/styles.css">' in ui
-    assert '<script src="/static/app.js" defer></script>' in ui
+    assert '<link rel="stylesheet" href="/static/styles.css?v=9">' in ui
+    assert '<script src="/static/app.js?v=9" defer></script>' in ui
     assert "<style>" not in ui
     assert "<script>" not in ui
     assert CSS_PATH.is_file()
@@ -45,6 +45,16 @@ def test_editorial_shell_prioritizes_research_command_and_useful_empty_state() -
     assert ui.index('id="researchForm"') < ui.index('id="workspace"')
 
 
+def test_command_center_links_world_cup_predictor_safely() -> None:
+    html = UI_PATH.read_text(encoding="utf-8")
+
+    assert "WM 2026 Predictor" in html
+    assert (
+        '<a class="external-tool-link" href="https://wc2026-predictor-8skd.onrender.com/" '
+        'target="_blank" rel="noopener noreferrer">'
+    ) in html
+
+
 def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
     ui, css = _ui(), _css()
 
@@ -57,8 +67,71 @@ def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
 
 def test_service_worker_versions_every_command_center_asset() -> None:
     worker = (STATIC / "sw.js").read_text(encoding="utf-8")
-    for path in ("/", "/static/styles.css", "/static/app.js"):
+    for path in ("/", "/static/styles.css?v=9", "/static/app.js?v=9"):
         assert repr(path) in worker or f'"{path}"' in worker
+
+
+def test_service_worker_leaves_api_and_runtime_config_on_the_network() -> None:
+    worker = (STATIC / "sw.js").read_text(encoding="utf-8")
+
+    assert "req.method !== 'GET' || url.pathname.startsWith('/api/')" in worker
+    assert "url.pathname.startsWith('/api/')" in worker
+    assert "config.js" not in worker
+
+
+def test_service_worker_refreshes_static_assets_before_cache_fallback() -> None:
+    worker = (STATIC / "sw.js").read_text(encoding="utf-8")
+
+    assert "caches.match(req).then((hit) => hit || fetch(req))" not in worker
+    assert "fetch(req)" in worker
+    assert ".then((response) =>" in worker
+    assert "cache.put(req, response.clone())" in worker
+    assert ".catch(() => caches.match(req))" in worker
+
+
+def test_frontend_loads_runtime_config_before_app_and_uses_one_api_url_helper() -> None:
+    html, js = UI_PATH.read_text(encoding="utf-8"), _js()
+
+    assert '<script src="/config.js" defer></script>' in html
+    assert html.index('/config.js') < html.index('/static/app.js')
+    assert "function normalizeApiBase" in js
+    assert "raw.includes('?')" in js
+    assert "raw.includes('#')" in js
+    assert "function apiUrl" in js
+    assert "new URL(endpoint, API_BASE_URL + '/')" in js
+    assert "function apiFetch" in js
+    assert "fetch('/api/" not in js
+    for endpoint in ("/api/chat", "/api/research/run", "/api/research/providers", "/api/research/macro"):
+        assert f"apiFetch('{endpoint}'" in js
+
+
+def test_frontend_exposes_structured_device_status_approval_and_result_polling() -> None:
+    ui = _ui()
+
+    for identifier in ("deviceState", "deviceLabel"):
+        assert f'id="{identifier}"' in ui
+    for name in ("loadDeviceStatus", "renderDeviceAction", "submitDeviceDecision", "pollDeviceAction"):
+        assert f"function {name}" in ui
+    assert "device_action" in ui
+    assert "apiFetch('/api/device/status'" in ui
+    assert "apiFetch('/api/device/actions/'" in ui
+    assert "apiFetch('/api/device/actions/' + encodeURIComponent(actionId) + '/decision'" in ui
+    for name in ("cancelDevicePolling", "cancelAllDevicePolling", "startDevicePolling"):
+        assert f"function {name}" in ui
+    assert "devicePolls" in ui
+    assert "generation" in ui
+    assert "DEVICE_POLL_RETRY_LIMIT" in ui
+    assert "DEVICE_POLL_MAX_DURATION_MS" in ui
+    assert "timed_out" in ui
+    assert "Authorization required" in ui
+    assert "state.retries < DEVICE_POLL_RETRY_LIMIT" in ui
+    assert "state.retries = 0" in ui
+    assert "Device action status is unavailable after repeated attempts." in ui
+    assert "Device action status polling timed out." in ui
+    assert "setTimeout(() => pollDeviceAction" in ui
+    assert "/api/device-agent/" not in ui
+    assert "cancelAllDevicePolling()" in ui
+    assert "sessionId = newSession()" in ui
 
 
 def test_asset_renderer_has_document_sections_and_compact_formatters() -> None:
@@ -100,10 +173,20 @@ def test_command_center_has_command_first_prompt_and_research_modes() -> None:
         assert label in ui
 
 
+def test_command_center_preserves_hands_free_voice_loop() -> None:
+    ui = _ui()
+
+    assert 'id="handsFreeBtn"' in ui
+    assert "jarvis_handsfree" in ui
+    assert "function tryAutoListen" in ui
+    assert "if (!handsFree || speaking) return" in ui
+    assert "tryAutoListen();" in ui
+
+
 def test_research_requests_preserve_existing_chat_flow() -> None:
     ui = _ui()
 
-    assert "fetch('/api/chat'" in ui
+    assert "apiFetch('/api/chat'" in ui
     assert "session_id: sessionId" in ui
     assert "finance_research:" in ui
     assert "hitl_pending" in ui
@@ -147,7 +230,7 @@ def test_provider_status_is_explicit_and_does_not_expose_credentials() -> None:
 
     assert "Data coverage" in ui
     assert "loadProviderStatus" in ui
-    assert "'/api/research/providers'" in ui
+    assert "apiFetch('/api/research/providers'" in ui
     assert "Credential values are never displayed." in ui
     assert "configuration_state" in ui
     assert "Connection error. Please check that the Jarvis server is available." in ui
@@ -167,8 +250,14 @@ def test_command_center_loads_canonical_macro_context() -> None:
 
     assert 'id="macroState"' in ui
     assert "loadMacroContext" in ui
-    assert "'/api/research/macro'" in ui
+    assert "apiFetch('/api/research/macro'" in ui
     assert "macro-grid" in ui
+    assert "data.countries" in ui
+    assert "macro-countries" in ui
+    assert "macro-country" in ui
+    assert "country.label" in ui
+    assert "10-year government yield" in ui
+    assert "Real GDP growth" in ui
     assert "Macro context" in ui
 
 
@@ -189,7 +278,7 @@ def test_navigation_opens_validated_research_workflows_and_charts() -> None:
     assert 'id="workflowAsset"' in ui
     assert 'id="workflowBenchmark"' in ui
     assert "openWorkflow" in ui
-    assert "fetch('/api/research/run'" in ui
+    assert "apiFetch('/api/research/run'" in ui
     assert "appendPriceChart" in ui
     assert ".workflow-panel[hidden], .workflow-panel [hidden] { display: none; }" in ui
     assert "price-chart" in ui

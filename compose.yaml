@@ -1,0 +1,22 @@
+services:
+  cloud:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - ${JARVIS_CLOUD_ENV_FILE:-./deploy/cloud.env}
+    environment:
+      JARVIS_BRAIN_DIR: /data/chroma
+      JARVIS_SESSIONS_FILE: /data/sessions/jarvis_sessions.json
+      JARVIS_CLOUD_DB_PATH: /data/device/jarvis_cloud.sqlite3
+    ports:
+      - "127.0.0.1:${JARVIS_CLOUD_PORT:-8000}:8000"
+    volumes:
+      - jarvis_chroma:/data/chroma
+      - jarvis_sessions:/data/sessions
+      - jarvis_device:/data/device
+
+volumes:
+  jarvis_chroma:
+  jarvis_sessions:
+  jarvis_device:
