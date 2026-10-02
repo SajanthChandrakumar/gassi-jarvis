@@ -1,5 +1,10 @@
 # Free-Tier Research Data Implementation Plan
 
+> Historical plan: Benzinga and Tiingo were removed on 2026-10-02, and the
+> OpenBB metapackage was replaced by pinned components. Use
+> [OpenBB research](../../openbb-research.md) for current installation and
+> provider configuration; the snippets below describe the original plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Expand Jarvis' canonical research output to the maximum essential evidence verified on the configured free tiers, with endpoint-specific fallbacks and truthful quality/provenance.

@@ -12,9 +12,9 @@ def test_provider_statuses_report_configuration_not_unverified_liveness() -> Non
     assert statuses["yfinance"].configuration_state == "built_in"
     assert statuses["sec"].configuration_state == "built_in"
     assert statuses["fmp"].configuration_state == "configured"
-    assert statuses["benzinga"].configuration_state == "configured"
     assert statuses["fred"].configuration_state == "configured"
-    assert statuses["tiingo"].configuration_state == "configured"
+    assert "benzinga" not in statuses
+    assert "tiingo" not in statuses
     assert not hasattr(statuses["fmp"], "availability")
 
 

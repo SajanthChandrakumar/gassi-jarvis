@@ -35,9 +35,7 @@ _PROVIDER_SPECS = (
     _ProviderSpec("sec", None, ("financial statements", "company filings")),
     _ProviderSpec("econdb", None, ("macro series",)),
     _ProviderSpec("fmp", "FMP_API_KEY", ("price fallback", "company profile", "financial statements", "valuation metrics", "analyst estimates", "earnings calendar")),
-    _ProviderSpec("benzinga", "BENZINGA_API_KEY", ()),
     _ProviderSpec("fred", "FRED_API_KEY", ("US macro context",)),
-    _ProviderSpec("tiingo", "TIINGO_TOKEN", ("price-history fallback",)),
 )
 
 

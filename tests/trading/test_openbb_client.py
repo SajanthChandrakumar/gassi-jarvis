@@ -91,26 +91,30 @@ def test_equity_price_history_preserves_provider_data_and_forwards_parameters():
     assert result.data[0]["volume"] == 42
 
 
-def test_equity_price_history_uses_configured_fallback_after_empty_default():
+def test_equity_price_history_ignores_removed_credentials_and_uses_fmp_fallback(monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "configured")
+    monkeypatch.setenv("TIINGO_TOKEN", "obsolete")
+    monkeypatch.setenv("BENZINGA_API_KEY", "obsolete")
     providers = []
 
     def historical(**kwargs):
         providers.append(kwargs["provider"])
         if kwargs["provider"] == "yfinance":
             return FakeResult([], provider="yfinance")
-        return FakeResult([FakeRow(date=date(2026, 8, 1), close=11)], provider="tiingo")
+        assert kwargs["provider"] == "fmp"
+        return FakeResult([FakeRow(date=date(2026, 8, 1), close=11)], provider="fmp")
 
     client = OpenBBResearchClient(
         _fake_openbb(equity_price=historical),
-        ResearchProviderSettings(price=("yfinance", "tiingo")),
+        ResearchProviderSettings.from_environment(),
     )
     result = client.get_price_history("NVDA")
 
-    assert providers == ["yfinance", "tiingo"]
-    assert result.provider == "tiingo"
+    assert providers == ["yfinance", "fmp"]
+    assert result.provider == "fmp"
     assert [(item.provider, item.outcome, item.code) for item in result.attempts] == [
         ("yfinance", "failure", "no_data"),
-        ("tiingo", "success", None),
+        ("fmp", "success", None),
     ]
 
 
@@ -121,11 +125,11 @@ def test_default_provider_chain_records_attempts_and_preserves_them_in_provenanc
         providers.append(kwargs["provider"])
         if kwargs["provider"] == "yfinance":
             return FakeResult([], provider="yfinance")
-        return FakeResult([FakeRow(date="2026-08-20", close=10)], provider="tiingo")
+        return FakeResult([FakeRow(date="2026-08-20", close=10)], provider="fmp")
 
     client = OpenBBResearchClient(
         _fake_openbb(equity_price=historical),
-        ResearchProviderSettings(price=("yfinance", "tiingo", "fmp")),
+        ResearchProviderSettings(price=("yfinance", "fmp")),
     )
 
     result = client.get_price_history("NVDA")
@@ -135,10 +139,10 @@ def test_default_provider_chain_records_attempts_and_preserves_them_in_provenanc
         now=datetime(2026, 8, 20, 12, tzinfo=timezone.utc),
     )
 
-    assert providers == ["yfinance", "tiingo"]
+    assert providers == ["yfinance", "fmp"]
     assert [(item.provider, item.outcome, item.code) for item in result.attempts] == [
         ("yfinance", "failure", "no_data"),
-        ("tiingo", "success", None),
+        ("fmp", "success", None),
     ]
     assert normalized.provenance.attempts == result.attempts
 
@@ -152,7 +156,7 @@ def test_explicit_provider_does_not_fall_through_the_default_chain():
 
     client = OpenBBResearchClient(
         _fake_openbb(equity_price=historical),
-        ResearchProviderSettings(price=("yfinance", "tiingo")),
+        ResearchProviderSettings(price=("yfinance", "fmp")),
     )
 
     with pytest.raises(ResearchNoDataError):
@@ -205,19 +209,19 @@ def test_company_news_preserves_articles_and_forwards_bounded_request():
                 excerpt="Revenue increased during the quarter.",
                 url="https://example.com/nvda-results",
             )
-        ], provider="benzinga")
+        ], provider="yfinance")
 
     result = _client(company_news=company_news).get_company_news(
         "NVDA", start_date="2026-08-01", end_date="2026-08-20", limit=8,
-        provider="benzinga",
+        provider="yfinance",
     )
 
     assert captured == {
         "symbol": "NVDA", "start_date": "2026-08-01", "end_date": "2026-08-20",
-        "limit": 8, "provider": "benzinga",
+        "limit": 8, "provider": "yfinance",
     }
     assert result.category == "company_news"
-    assert result.provider == "benzinga"
+    assert result.provider == "yfinance"
     assert result.data[0]["title"] == "NVIDIA publishes quarterly results"
 
 
@@ -252,20 +256,20 @@ def test_company_news_falls_back_to_yfinance_when_configured_default_is_empty():
 
     def company_news(**kwargs):
         providers.append(kwargs["provider"])
-        if kwargs["provider"] == "benzinga":
-            return FakeResult([], provider="benzinga")
+        if kwargs["provider"] == "empty-news-provider":
+            return FakeResult([], provider="empty-news-provider")
         return FakeResult([FakeRow(date="2026-08-19T14:30:00+00:00", title="Fallback item")], provider="yfinance")
 
     client = OpenBBResearchClient(
         _fake_openbb(company_news=company_news),
-        ResearchProviderSettings(news=("benzinga", "yfinance")),
+        ResearchProviderSettings(news=("empty-news-provider", "yfinance")),
     )
     result = client.get_company_news("NVDA", limit=3)
 
-    assert providers == ["benzinga", "yfinance"]
+    assert providers == ["empty-news-provider", "yfinance"]
     assert result.provider == "yfinance"
     assert [(item.provider, item.outcome, item.code) for item in result.attempts] == [
-        ("benzinga", "failure", "no_data"),
+        ("empty-news-provider", "failure", "no_data"),
         ("yfinance", "success", None),
     ]
 

@@ -4,6 +4,11 @@ Date: 2026-08-20
 Status: approved direction, implementation pending
 Scope: read-only Jarvis financial research and the Command Center
 
+> Historical design: Benzinga and Tiingo were removed on 2026-10-02.
+> The current providers and fallback chains are documented in
+> [OpenBB research](../../openbb-research.md). The evidence below records the
+> original design, not the current provider configuration.
+
 ## Objective
 
 Turn the existing Command Center into a calm, editorial research workspace and

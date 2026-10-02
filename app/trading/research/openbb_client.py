@@ -50,10 +50,9 @@ class ResearchProviderSettings:
     @classmethod
     def from_environment(cls) -> "ResearchProviderSettings":
         has_fmp = bool(os.getenv("FMP_API_KEY", "").strip())
-        has_tiingo = bool(os.getenv("TIINGO_TOKEN", "").strip())
         has_fred = bool(os.getenv("FRED_API_KEY", "").strip())
         return cls(
-            price=("yfinance",) + (("tiingo",) if has_tiingo else ()) + (("fmp",) if has_fmp else ()),
+            price=("yfinance",) + (("fmp",) if has_fmp else ()),
             quote=("yfinance",) + (("fmp",) if has_fmp else ()),
             profile=(("fmp",) if has_fmp else ()) + ("yfinance",),
             statements=("sec",) + (("fmp",) if has_fmp else ()) + ("yfinance",),

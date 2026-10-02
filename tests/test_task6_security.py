@@ -677,7 +677,7 @@ def test_research_endpoints_use_real_dispatch_serialization_and_preserve_provena
 
     token = "research-token"
     monkeypatch.setattr(main_module, "API_TOKEN", token)
-    for key in ("FMP_API_KEY", "BENZINGA_API_KEY", "FRED_API_KEY", "TIINGO_TOKEN"):
+    for key in ("FMP_API_KEY", "FRED_API_KEY"):
         monkeypatch.delenv(key, raising=False)
 
     class OfflineMacroService:

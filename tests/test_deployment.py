@@ -30,7 +30,7 @@ def test_cloud_and_device_requirements_keep_runtime_pins_and_split_mac_dependenc
 
     assert "fastapi==0.136.3" in cloud
     assert "uvicorn==0.40.0" in cloud
-    assert "openbb==4.7.2" in cloud
+    assert "openbb-core==1.6.13" in cloud
     assert "Pillow" not in cloud
     assert "pydantic==2.13.3" in device
     assert "Pillow==12.2.0" in device

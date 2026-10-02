@@ -10,7 +10,17 @@ chromadb==1.5.8
 slowapi==0.1.9
 google-api-python-client==2.198.0
 google-auth-oauthlib==1.4.0
-openbb==4.7.2
+# Tested OpenBB 4 components; avoid the all-provider metapackage.
+openbb-core==1.6.13
+openbb-equity==1.6.2
+openbb-crypto==1.6.2
+openbb-economy==1.6.2
+openbb-news==1.6.2
+openbb-yfinance==1.6.3
+openbb-sec==1.6.7
+openbb-econdb==1.5.1
+openbb-fmp==1.6.1
+openbb-fred==1.6.2
 scipy==1.18.0
 statsmodels==0.14.6
 vectorbt==1.1.0

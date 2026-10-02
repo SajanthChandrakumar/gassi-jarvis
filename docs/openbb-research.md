@@ -13,7 +13,7 @@ and the ordered provider attempts made for that endpoint.
 
 | Method | OpenBB route | Default provider | Data |
 |---|---|---|---|
-| `get_price_history(..., asset_type="equity")` | `equity.price.historical` | `yfinance` | Equity/ETF OHLCV |
+| `get_price_history(..., asset_type="equity")` | `equity.price.historical` | `yfinance`, then configured FMP | Equity/ETF OHLCV |
 | `get_price_history(..., asset_type="crypto")` | `crypto.price.historical` | `yfinance` | Crypto-pair OHLCV and volume |
 | `get_equity_quote` | `equity.price.quote` | `yfinance`, then configured FMP | Current quote snapshot |
 | `get_company_profile` | `equity.profile` | configured FMP, then `yfinance` | Raw company/ETF profile fields |
@@ -33,43 +33,52 @@ continue to request their price series directly. This prevents provider-specific
 pair syntax and equity-only sections from leaking into the research models or
 breaking crypto/benchmark analysis.
 
-OpenBB 4.7.2 is intentionally used through its supported `from openbb import
-obb` interface. The `openbb` package currently bundles the OpenBB routers and
-provider extensions, including the default `yfinance` and `econdb` connectors;
-no separate provider package is pinned in this repository.
+Jarvis uses OpenBB 4 through its supported `from openbb import obb` interface.
+The core package provides this interface; the required routers and provider
+extensions are installed separately at their tested versions.
 
 ## Dependency impact
 
-Phase 1 adds one direct package: `openbb==4.7.2`. Its published distribution
-brings the official OpenBB routers and provider extensions as transitive
-dependencies; this is required by OpenBB's supported top-level Python
-interface, rather than a Jarvis-specific installation of every provider.
-Jarvis keeps `yfinance` and `econdb` as credential-free defaults. When their
-credentials are present, FMP, Benzinga, FRED, and Tiingo are selected only for
-the bounded routes described below.
+Both runtime requirement files pin OpenBB Core 1.6.13, the equity, crypto,
+economy, and news routers, and five provider extensions: Yahoo Finance, SEC,
+EconDB, FMP, and FRED. These are the component versions tested with the former
+OpenBB 4.7.2 installation; this is not an upgrade to OpenBB 5.
+
+The all-provider `openbb` metapackage is no longer installed because it pulls
+in unwanted provider extensions. Benzinga and Tiingo were removed on
+2026-10-02. Their credentials no longer enable any Jarvis route or status entry.
 
 OpenBB Core 1.6.13 requires FastAPI 0.136.3 and Uvicorn below 0.41, so the
-project pins were aligned to `fastapi==0.136.3` and `uvicorn==0.40.0`. No data
-provider API key or additional provider package is added directly by Jarvis.
+project retains `fastapi==0.136.3` and `uvicorn==0.40.0`.
 
 ## Provider configuration and credentials
 
-The default providers can be overridden for a call or configured through:
+Each endpoint uses the bounded chain above. Optional credentials enable:
 
-| Variable | Default |
+| Variable | Coverage |
 |---|---|
-| `JARVIS_OPENBB_EQUITY_PROVIDER` | `yfinance` |
-| `JARVIS_OPENBB_CRYPTO_PROVIDER` | `yfinance` |
-| `JARVIS_OPENBB_MACRO_PROVIDER` | `fred` with `FRED_API_KEY`, otherwise `econdb` |
-| `JARVIS_OPENBB_NEWS_PROVIDER` | `benzinga` with `BENZINGA_API_KEY`, otherwise `yfinance` |
-| `JARVIS_OPENBB_ESTIMATES_PROVIDER` | `fmp` with `FMP_API_KEY`, otherwise `yfinance` |
-| `JARVIS_OPENBB_PRICE_FALLBACK_PROVIDER` | `tiingo` with `TIINGO_TOKEN`, otherwise unset |
+| `FMP_API_KEY` | Price/quote fallback, profiles, statements, metrics, estimates, and earnings |
+| `FRED_API_KEY` | US and Swiss macro context |
 
-`yfinance` and `econdb` are intended to work without Jarvis-managed API keys.
-Other installed OpenBB providers may require credentials in OpenBB's supported
-settings/environment configuration (for example FMP, FRED, Polygon, Alpha
-Vantage, Intrinio, Tiingo, Tradier, or TradingEconomics). Credentials never
-belong in repository files, ChromaDB, sessions, or the financial ledger.
+Yahoo Finance, SEC, and EconDB do not need Jarvis-managed API keys. The adapter
+also accepts an explicit per-call provider override for a supported installed
+provider; `JARVIS_OPENBB_*_PROVIDER` environment overrides are not implemented.
+Credentials never belong in repository files, ChromaDB, sessions, or the
+financial ledger.
+
+For an existing local virtual environment, installing the new requirements
+alone does not uninstall old packages. Remove the former metapackage and the
+two removed extensions, then install the pinned components and rebuild the SDK:
+
+```bash
+.venv/bin/python -m pip uninstall -y openbb openbb-benzinga openbb-tiingo
+.venv/bin/python -m pip install --force-reinstall --no-deps openbb-core==1.6.13
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -c 'import openbb; openbb.build()'
+```
+
+The Core reinstall restores shared `openbb` import files that uninstalling the
+old metapackage can remove. It is unnecessary for a fresh virtual environment.
 
 Provider/endpoint failures are exposed as structured adapter exceptions: missing
 credential, rate limit, unsupported endpoint, invalid symbol, no data, or
@@ -88,9 +97,8 @@ data.
 Provider state uses only `built_in`, `configured`, and `not_configured`.
 Configuration is not a liveness claim. Yahoo Finance, SEC, and EconDB are
 built in. FMP adds bounded profile, statements, metrics, estimates, and earnings
-coverage; FRED adds the configured US and Swiss macro series; Tiingo is a price fallback. Benzinga
-may be configured but is not in the current default route because the verified
-free-tier company-news response was empty. Any provider may still return an
+coverage and price/quote fallbacks; FRED adds the configured US and Swiss macro
+series. Any provider may still return an
 entitlement, rate-limit, empty-data, or endpoint error.
 
 Each endpoint owns an ordered fallback chain. Failed and successful attempts

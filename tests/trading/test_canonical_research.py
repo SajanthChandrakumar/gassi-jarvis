@@ -132,13 +132,13 @@ def test_company_news_normalization_orders_articles_and_preserves_provenance():
     raw = _raw("company_news", [
         {"date": "2026-08-18T09:00:00+00:00", "title": "Older item", "excerpt": None, "url": "https://example.com/older"},
         {"date": "2026-08-19T14:30:00+00:00", "title": "Newer item", "excerpt": "Evidence only", "url": "https://example.com/newer"},
-    ], provider="benzinga")
+    ], provider="yfinance")
 
     news = normalizers.normalize_company_news(raw, ASSET, now=NOW)
 
     assert [article.title for article in news.articles] == ["Newer item", "Older item"]
     assert news.articles[0].published_at == datetime(2026, 8, 19, 14, 30, tzinfo=timezone.utc)
-    assert news.provenance.provider == "benzinga"
+    assert news.provenance.provider == "yfinance"
     assert news.as_of == news.articles[0].published_at
     assert news.quality.status is QualityStatus.COMPLETE
 

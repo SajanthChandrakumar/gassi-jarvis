@@ -301,9 +301,13 @@ Keep secrets outside the repository, Compose file, plist, frontend, and image.
 | `JARVIS_AGENT_ENV_FILE` | `$HOME/.config/jarvis/mac-agent.env` by default for the wrapper. |
 | `JARVIS_AGENT_PROJECT_DIR`, `JARVIS_AGENT_PYTHON` | Required by the LaunchAgent wrapper; project and Python executable paths. |
 
-Optional OpenBB provider credentials (`FMP_API_KEY`, `TIINGO_TOKEN`,
-`FRED_API_KEY`) affect research coverage only; unavailable providers are
-reported as unavailable rather than replaced with invented values.
+Optional OpenBB provider credentials (`FMP_API_KEY`, `FRED_API_KEY`) affect
+research coverage only; unavailable providers are reported as unavailable
+rather than replaced with invented values. The supported providers are Yahoo
+Finance, SEC, EconDB, FMP, and FRED. Benzinga and Tiingo have been removed;
+their credentials are no longer used. Equity prices fall back from Yahoo
+Finance to FMP when configured. Only the needed OpenBB 4 components are
+installed; see [provider configuration](docs/openbb-research.md).
 
 ## Device lifecycle and API
 

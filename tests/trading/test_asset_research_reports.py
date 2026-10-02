@@ -90,7 +90,7 @@ def test_report_exposes_company_news_without_interpreting_headlines():
     news = CompanyNews(
         data.asset,
         (NewsArticle(NOW, "NVIDIA publishes quarterly results", "Evidence only", "https://example.com/nvda"),),
-        ResearchProvenance("benzinga", "company_news", NOW),
+        ResearchProvenance("yfinance", "company_news", NOW),
         NOW,
         FreshnessStatus.FRESH,
         DataQuality(QualityStatus.COMPLETE),
@@ -100,7 +100,7 @@ def test_report_exposes_company_news_without_interpreting_headlines():
 
     assert report.news == news.articles
     assert next(item for item in report.data_coverage if item.section == "news").availability is Availability.AVAILABLE
-    assert any(source.source_category == "company_news" and source.provider == "benzinga" for source in report.sources)
+    assert any(source.source_category == "company_news" and source.provider == "yfinance" for source in report.sources)
 
 
 def test_report_exposes_observed_estimate_metrics_without_recommendation():
