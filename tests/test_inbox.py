@@ -48,6 +48,14 @@ class TestAddTask:
         inbox.add_task("test")
         assert nested.exists()
 
+    def test_embedded_newlines_cannot_create_extra_checkbox_records(self):
+        inbox.add_task("Tests ausführen\n- [ ] Unbeabsichtigte zweite Aufgabe")
+
+        assert len(inbox.INBOX_FILE.read_text(encoding="utf-8").splitlines()) == 1
+        assert inbox.get_open_tasks() == [
+            "Tests ausführen - [ ] Unbeabsichtigte zweite Aufgabe"
+        ]
+
 
 class TestOpenTasks:
     def test_empty_when_no_file(self):

@@ -5,7 +5,7 @@ This is the single entry point for all client requests.
 It orchestrates the full request lifecycle:
 
     1. HitL Interceptor — Check for pending dangerous commands awaiting approval.
-    2. LLM Call         — Send user text to Gemini via the agent module.
+    2. Inbox / research — Route clear requests directly; otherwise call Gemini.
     3. Tool Executor    — Handle function calls (open_app / shell_command).
     4. Text Passthrough — Return plain LLM responses when no tools are triggered.
 
@@ -150,14 +150,6 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?://|www\.)[^)]+\)")
 # them out letter by letter, so replace with a short spoken placeholder.
 _BARE_URL = re.compile(r"\b(?:https?://|www\.)\S+")
 
-_TASK_LIST_FALLBACK = re.compile(
-    r"^\s*(?:list|show)(?:\s+me)?\s+(?:my\s+)?(?:open\s+)?(?:tasks|to-?dos)\s*[.!?]*\s*$",
-    re.IGNORECASE,
-)
-_TASK_CAPTURE_FALLBACK = re.compile(
-    r"^\s*(?:merke|notiere)(?:\s+mir)?\s+(?:als\s+)?(?:aufgabe|to-?do)\s*:\s*(?P<task>.+?)\s*[.!?]*\s*$",
-    re.IGNORECASE,
-)
 _WEB_SEARCH_FALLBACK = re.compile(
     r"^\s*(?:suche|such)(?:\s+bitte)?\s+(?:im|in\s+dem)\s+web\s+nach\s+(?P<query>.+?)\s*[.!?]*\s*$",
     re.IGNORECASE,
@@ -169,11 +161,7 @@ _NAMED_WEB_SEARCH_FALLBACK = re.compile(
 
 
 def _explicit_empty_response_fallback(user_text: str) -> tuple[str, str] | None:
-    """Recognize only explicit task or web-search requests after an empty LLM reply."""
-    if _TASK_LIST_FALLBACK.fullmatch(user_text):
-        return "task_list", ""
-    if match := _TASK_CAPTURE_FALLBACK.fullmatch(user_text):
-        return "task_captured", match.group("task").strip()
+    """Recognize explicit web-search requests after an empty LLM reply."""
     for pattern in (_WEB_SEARCH_FALLBACK, _NAMED_WEB_SEARCH_FALLBACK):
         if match := pattern.fullmatch(user_text):
             return "web_search", match.group("query").strip()
@@ -505,7 +493,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
     Flow:
         Step 1 — HitL Interceptor: If a dangerous command is pending,
                  classify user intent (APPROVE / DENY / UNCLEAR).
-        Step 2 — LLM Call: Send user text to Gemini (with session history).
+        Step 2 — Inbox / research routing, then Gemini (with session history).
         Step 3 — Tool Executor: Handle function_calls from Gemini.
         Step 4 — Text Passthrough: Return plain text if no tools fired.
     """
@@ -533,6 +521,10 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
             research_payload=research_payload,
             device_action=device_action,
         )
+
+    async def respond_with_task(task: str) -> dict:
+        action, text = inbox.capture_task(task)
+        return await respond(text=text, action=action)
 
     async def respond_with_web_search(query: str, *, include_history: bool = True) -> dict:
         log.info("Web-Suche angefordert: %r", query)
@@ -649,8 +641,15 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
                 )
 
         # ──────────────────────────────────────────────────────────────────
-        # STEP 2: LLM Call — Send to Gemini
+        # STEP 2: Bounded inbox routing, then research / Gemini
         # ──────────────────────────────────────────────────────────────────
+        task_request = inbox.parse_task_request(user_text)
+        if task_request:
+            task_action, task_text = task_request
+            if task_action == "capture_task":
+                return await respond_with_task(task_text)
+            return await respond(text=inbox.list_tasks(), action="task_list")
+
         # Explicit BTC/ETH performance requests are a bounded read-only
         # research workflow. Route them deterministically so the chat model
         # cannot incorrectly claim that crypto research is unavailable.
@@ -814,8 +813,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
 
                     # ── Task inbox ──────────────────────────────────────────
                     elif fc.name == "capture_task":
-                        result = inbox.add_task(str(fc.args.get("task", "") or ""))
-                        return await respond(text=result, action="task_captured")
+                        return await respond_with_task(str(fc.args.get("task", "") or ""))
 
                     elif fc.name == "list_tasks":
                         return await respond(
@@ -877,11 +875,7 @@ async def chat_with_jarvis(request: Request, chat: ChatRequest):
         if not response_text and not saw_function_call:
             fallback = _explicit_empty_response_fallback(user_text)
             if fallback:
-                action, value = fallback
-                if action == "task_list":
-                    return await respond(text=inbox.list_tasks(), action=action)
-                if action == "task_captured":
-                    return await respond(text=inbox.add_task(value), action=action)
+                _action, value = fallback
                 return await respond_with_web_search(value, include_history=False)
 
         return await respond(

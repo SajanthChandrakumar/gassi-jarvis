@@ -29,17 +29,68 @@ INBOX_FILE = Path(os.environ.get("JARVIS_INBOX_FILE", str(_DEFAULT_INBOX)))
 # prefix and the trailing "_(erfasst ...)_" stamp).
 _OPEN_TASK = re.compile(r"^-\s*\[\s*\]\s*(.*?)(?:\s*_\(erfasst\s.*\)_)?\s*$")
 
+_TASK_PREFIX = r"(?:jarvis\b[,\s]*)?(?:(?:bitte|please)\s+)?"
+_TASK_LIST_REQUEST = re.compile(
+    _TASK_PREFIX + r"(?:"
+    r"(?:list|show)(?:\s+me)?\s+(?:my\s+)?(?:open\s+)?(?:tasks|to-?dos)"
+    r"|zeig(?:e)?(?:\s+mir)?\s+(?:meine|die)\s+(?:offenen\s+)?(?:aufgaben|to-?dos|aufgabenliste)"
+    r"|welche\s+(?:offenen\s+)?(?:aufgaben|to-?dos)\s+habe\s+ich"
+    r")\s*[.!?]*",
+    re.IGNORECASE,
+)
+_TASK_CAPTURE_REQUESTS = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    _TASK_PREFIX + r"(?:merke|notier(?:e)?)(?:\s+mir)?\s+(?:(?:als|eine)\s+)?"
+    r"(?:aufgabe|to-?do)\s*(?::\s*(?P<task>.*))?[.!?]*",
+    _TASK_PREFIX + r"add\s+(?:a\s+)?(?:task|to-?do)\s*(?::\s*(?P<task>.*))?[.!?]*",
+    _TASK_PREFIX + r"füge(?:\s+(?P<task>.*?))?\s+zu\s+meiner\s+aufgabenliste\s+hinzu[.!?]*",
+    r"(?P<short>jarvis\b[,\s]*(?:bitte\s+)?notier(?:e)?\s*:\s*)(?P<task>.*)",
+))
+_AMBIGUOUS_SHORT_NOTE = re.compile(
+    r"^(?:ich|i|my|mein(?:e|en|er|em|es)?|erinnere|remember|"
+    r"morgen|heute|übermorgen|am|tomorrow|today|on)\b"
+    r"|^(?:termin|meeting|kalendereintrag)\b"
+    r"(?!\s+(?:vereinbaren|planen|absagen|vorbereiten|organisieren|schedule|prepare|cancel)\b)",
+    re.IGNORECASE,
+)
+_UNCERTAIN_TASK_END = re.compile(
+    r"\b(?:oder\s+(?:vielleicht\s+)?lieber\s+nicht|or\s+(?:maybe\s+)?not|"
+    r"(?:aber|doch)(?:\s+bitte)?\s+nicht\s+(?:speichern|notieren)|"
+    r"but\s+don['’]t\s+(?:save|store)(?:\s+it)?)\s*[.!?]*$",
+    re.IGNORECASE,
+)
+
+
+def parse_task_request(user_text: str) -> tuple[str, str] | None:
+    """Recognize bounded inbox commands, leaving other requests to normal chat."""
+    text = " ".join((user_text or "").split())
+    if _TASK_LIST_REQUEST.fullmatch(text):
+        return "list_tasks", ""
+    for pattern in _TASK_CAPTURE_REQUESTS:
+        if match := pattern.fullmatch(text):
+            task = (match.group("task") or "").strip()
+            if _UNCERTAIN_TASK_END.search(task):
+                return None
+            if match.groupdict().get("short") and _AMBIGUOUS_SHORT_NOTE.search(task):
+                return None
+            return "capture_task", task
+    return None
+
 
 def add_task(task: str) -> str:
+    """Append a task and return its spoken-friendly result."""
+    return capture_task(task)[1]
+
+
+def capture_task(task: str) -> tuple[str, str]:
     """
-    Append a task to the inbox. Returns a spoken-friendly confirmation.
+    Append one record and return its action and spoken-friendly result.
 
     Best-effort: a filesystem error is reported to the user rather than raised,
     so a capture failure never 500s the chat turn.
     """
-    task = (task or "").strip()
+    task = " ".join((task or "").split())
     if not task:
-        return "Ich habe leider keinen Text für die Notiz verstanden."
+        return "task_incomplete", "Welche Aufgabe soll ich notieren? Mir fehlt noch der Aufgabentext."
 
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     line = f"- [ ] {task}  _(erfasst {stamp})_\n"
@@ -49,10 +100,10 @@ def add_task(task: str) -> str:
             f.write(line)
     except OSError as e:
         log.error("Task konnte nicht gespeichert werden: %s", e)
-        return "Ich konnte die Notiz gerade nicht speichern."
+        return "task_capture_failed", "Ich konnte die Notiz gerade nicht speichern."
 
     log.info("Task erfasst: %s", task)
-    return f"Notiert: {task}"
+    return "task_captured", f"Notiert: {task}"
 
 
 def get_open_tasks() -> list[str]:
