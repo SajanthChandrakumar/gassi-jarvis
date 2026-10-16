@@ -43,7 +43,10 @@ selective aggregation. Gemini is not part of this path.
   canonical layer does not interpret headline sentiment.
 - `CompanyFilings` and `CompanyFiling`: at most five recent 10-K, 10-Q, or 8-K
   records with official evidence links and SEC provenance.
-- `MacroSeries`: dated, unit/frequency-aware macro observations.
+- `MacroSeries`: dated, unit/frequency-aware macro observations, with optional
+  definition, source name/link, dataset publication timestamp, and original
+  observation period. The Swiss SNB Fetcher supplies these fields; older
+  providers may leave them absent.
 - `CryptoMarketData`: a crypto-specific wrapper around price history plus
   optional supply/market-cap fields, without inventing unsupported derivatives
   data.
@@ -57,6 +60,12 @@ category, UTC `retrieved_at`, relevant request parameters, and ordered
 `ProviderAttempt` outcomes. `retrieved_at`
 means when Jarvis fetched the response. `as_of` means the latest date/time that
 the observation itself represents; the two fields must not be substituted.
+
+For Swiss monthly/quarterly series, `as_of` is the period end and the original
+`period` is retained on each observation. `published_at` is the SNB dataset's
+publication timestamp (Europe/Zurich converted to UTC), not `retrieved_at` or
+the first release date of each historical observation. Cache freshness never
+means that the underlying reporting period is current.
 
 `None` means an unavailable provider value, never numeric zero. `Availability`
 distinguishes available, missing, not-supported, not-requested, and upstream

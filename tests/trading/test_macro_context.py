@@ -52,15 +52,15 @@ def test_macro_context_keeps_successes_and_reports_provider_failures():
 
     assert len(service.calls) == 10
     assert {(country, provider) for country, *_, provider in service.calls} == {
-        ("switzerland", "fred"),
+        ("switzerland", "snb"),
         ("united_states", None),
     }
     assert {(indicator, series_id, transform, unit) for country, indicator, series_id, transform, unit, _ in service.calls if country == "switzerland"} == {
-        ("inflation", "CP0000CHM086NEST", "pc1", "% YoY"),
-        ("unemployment", "LRUNTTTTCHQ156S", None, "%"),
-        ("policy_rate", "IRSTCI01CHM156N", None, "%"),
-        ("treasury_10y", "IRLTLT01CHM156N", None, "%"),
-        ("real_gdp_growth", "CLVMNACSAB1GQCH", "pc1", "% YoY"),
+        ("inflation", "inflation", None, "% YoY"),
+        ("unemployment", "unemployment", None, "%"),
+        ("policy_rate", "policy_rate", None, "%"),
+        ("treasury_10y", "treasury_10y", None, "%"),
+        ("real_gdp_growth", "real_gdp_growth", None, "% QoQ"),
     }
     assert [country["code"] for country in payload["countries"]] == ["CH", "US"]
     assert [country["label"] for country in payload["countries"]] == ["Switzerland", "United States"]

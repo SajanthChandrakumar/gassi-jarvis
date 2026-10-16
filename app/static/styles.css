@@ -98,7 +98,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .macro-cell span, .macro-cell b, .macro-cell small { display: block; }
 .macro-cell span { color: var(--subtle); font-size: 10px; }
 .macro-cell b { margin-top: 8px; font-size: 14px; font-weight: 600; }
-.macro-cell small { margin-top: 5px; overflow: hidden; color: var(--subtle); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.macro-cell small { margin-top: 5px; color: var(--subtle); font-size: 9px; }
+.macro-cell a { display: inline-block; margin-top: 5px; color: var(--accent); font-size: 10px; }
 #macroState, #providerState, #deviceState { margin-top: 12px; color: var(--muted); font-size: 12px; line-height: 1.55; }
 #providerState small, #macroState > small, #deviceState small { display: block; margin-top: 6px; color: var(--subtle); }
 

@@ -481,6 +481,22 @@ class OpenBBResearchClient:
         }
 
         def request(selected_provider: str) -> ResearchData:
+            if selected_provider == "snb":
+                from .snb_macro import SWISS_SERIES, fetch_swiss_macro
+                spec = SWISS_SERIES.get(indicator)
+                if spec is None or country != "switzerland" or transform or (unit and unit != spec.unit) or (series_id and series_id != indicator):
+                    raise ResearchUnsupportedEndpointError(
+                        "SNB request does not match an official Swiss series.", provider="snb",
+                        public_message="This request does not match an official Swiss series definition.",
+                    )
+                _configure_tls_ca_bundle()
+                return self._execute(
+                    lambda: fetch_swiss_macro(symbol=indicator, country=country,
+                        start_date=_date_value(start_date), end_date=_date_value(end_date)),
+                    symbol=indicator, asset_type="macro", category="macro_series", requested_provider="snb",
+                    start_date=_date_value(start_date), end_date=_date_value(end_date),
+                    request_parameters=(("cube", spec.cube), ("dimSel", spec.selector), ("unit", spec.unit)),
+                )
             if selected_provider == "fred":
                 params: dict[str, Any] = {"symbol": fred_series, "provider": "fred"}
                 if transform:

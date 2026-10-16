@@ -532,7 +532,7 @@ def normalize_macro(
         name=first.get("title") or first.get("symbol_root"),
         country=first.get("country"),
     )
-    observations = tuple(MacroObservation(_utc_datetime(row.get("date"), "macro timestamp"), _decimal(row.get("value"), "macro value")) for row in raw.data)
+    observations = tuple(MacroObservation(_utc_datetime(row.get("date"), "macro timestamp"), _decimal(row.get("value"), "macro value"), row.get("period")) for row in raw.data)
     freshness = (policy or FreshnessPolicy()).status_for(raw.category, raw.retrieved_at, now=now)
     return MacroSeries(
         asset=asset,
@@ -543,6 +543,10 @@ def normalize_macro(
         as_of=max((item.timestamp for item in observations), default=None),
         freshness=freshness,
         quality=_quality(has_data=bool(observations), warnings=raw.warnings, missing_fields=(), freshness=freshness),
+        definition=first.get("definition"),
+        source_name=first.get("source_name"),
+        source_url=first.get("source_url"),
+        published_at=_utc_datetime(first["published_at"], "macro publication") if first.get("published_at") else None,
     )
 
 

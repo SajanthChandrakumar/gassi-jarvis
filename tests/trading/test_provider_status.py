@@ -11,6 +11,8 @@ def test_provider_statuses_report_configuration_not_unverified_liveness() -> Non
 
     assert statuses["yfinance"].configuration_state == "built_in"
     assert statuses["sec"].configuration_state == "built_in"
+    assert statuses["snb"].configuration_state == "built_in"
+    assert statuses["snb"].current_coverage == ("Swiss official macro context",)
     assert statuses["fmp"].configuration_state == "configured"
     assert statuses["fred"].configuration_state == "configured"
     assert "benzinga" not in statuses

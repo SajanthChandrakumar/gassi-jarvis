@@ -34,6 +34,7 @@ _PROVIDER_SPECS = (
     _ProviderSpec("yfinance", None, ("price history", "quote", "company profile", "financial statements", "valuation metrics", "analyst estimates", "company news")),
     _ProviderSpec("sec", None, ("financial statements", "company filings")),
     _ProviderSpec("econdb", None, ("macro series",)),
+    _ProviderSpec("snb", None, ("Swiss official macro context",)),
     _ProviderSpec("fmp", "FMP_API_KEY", ("price fallback", "company profile", "financial statements", "valuation metrics", "analyst estimates", "earnings calendar")),
     _ProviderSpec("fred", "FRED_API_KEY", ("US macro context",)),
 )

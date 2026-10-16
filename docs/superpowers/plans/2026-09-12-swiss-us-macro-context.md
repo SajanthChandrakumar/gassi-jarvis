@@ -1,5 +1,9 @@
 # Swiss and US Macro Context Implementation Plan
 
+> Historical plan: Swiss FRED proxy definitions below were superseded on
+> 2026-10-04 by the official SNB/BFS/SECO series documented in
+> [OpenBB research](../../openbb-research.md#official-swiss-definitions-2026-10-04).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Show Switzerland and the United States as two clearly separated, simultaneously visible macroeconomic panels backed by canonical OpenBB data.

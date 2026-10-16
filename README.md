@@ -15,6 +15,8 @@ calendar writes remain Human-in-the-Loop (HitL) gated.
 - macOS screen analysis, allowlisted app activation, and shell actions through
   the outbound agent's local classifier and HitL boundary.
 - Google Calendar reads and separately approved event creation.
+- Direct German/English task capture and open-task listing, with confirmation
+  only after the Markdown inbox has been written.
 - Installable PWA research workspace with evidence, provenance, quality, and
   explicit missing-data states.
 - Side-by-side Switzerland and United States macro context with provider,
@@ -40,7 +42,14 @@ and source provenance together.
 Switzerland and the United States are presented separately. Missing values
 remain explicit instead of being replaced with placeholders.
 
-![Jarvis Switzerland and United States macro context](docs/screenshots/jarvis-macro-context.png)
+Swiss cards now use national BFS/SECO statistics republished via SNB, the
+official SNB policy rate and Confederation spot yield. Definitions, reporting
+periods, publication dates and official links are visible. Swiss GDP is QoQ;
+US GDP remains YoY. The snapshot below was captured during local validation
+on 2026-10-04; reporting periods remain explicit because SNB republication
+can lag the agencies' latest releases.
+
+![Jarvis Switzerland and United States official macro context](docs/screenshots/jarvis-macro-official.jpg)
 
 ## Architecture at a glance
 
@@ -183,6 +192,14 @@ Jarvis can capture dictated to-dos with `capture_task` and read open items with
 `list_tasks`. Tasks are Markdown checkboxes in `jarvis_inbox.md` by default;
 set `JARVIS_INBOX_FILE` to an external Markdown or Obsidian note when desired.
 This cloud-side text inbox does not grant local Mac control.
+
+Clear requests such as `Notiere als Aufgabe: Auth-Bug fixen`,
+`Jarvis, notier: Tests ausführen`, `Add a task: Run tests`,
+`Zeig mir meine Aufgaben` and `List my open tasks` bypass Gemini and work
+even when its quota is unavailable. A pending HitL decision still takes
+priority. Empty task text asks for content; storage failure does not report
+capture success. General memory/calendar or hypothetical requests continue
+through ordinary chat. Multi-line input becomes one inbox record.
 
 ## API examples
 

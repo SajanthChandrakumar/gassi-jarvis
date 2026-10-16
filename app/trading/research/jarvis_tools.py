@@ -62,18 +62,9 @@ MACRO_CONTEXT = (
 )
 
 MACRO_COUNTRIES = (
-    MacroCountry("CH", "Switzerland", "switzerland", "fred"),
+    MacroCountry("CH", "Switzerland", "switzerland", "snb"),
     MacroCountry("US", "United States", "united_states"),
 )
-
-SWISS_FRED_SERIES = {
-    "inflation": "CP0000CHM086NEST",
-    "unemployment": "LRUNTTTTCHQ156S",
-    "policy_rate": "IRSTCI01CHM156N",
-    "treasury_10y": "IRLTLT01CHM156N",
-    "real_gdp_growth": "CLVMNACSAB1GQCH",
-}
-
 
 def macro_context_payload(
     service: CanonicalResearchService,
@@ -88,9 +79,9 @@ def macro_context_payload(
         try:
             item = to_jsonable(service.get_macro_series(
                 spec.key,
-                series_id=SWISS_FRED_SERIES.get(spec.key, spec.series_id) if country.code == "CH" else spec.series_id,
-                transform=spec.transform,
-                unit=spec.unit,
+                series_id=spec.key if country.code == "CH" else spec.series_id,
+                transform=None if country.code == "CH" else spec.transform,
+                unit="% QoQ" if country.code == "CH" and spec.key == "real_gdp_growth" else spec.unit,
                 country=country.country,
                 provider=country.provider,
                 start_date=start_date,

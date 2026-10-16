@@ -65,6 +65,13 @@ its unit, as-of date, source, freshness, and quality. Failures remain explicit;
 the UI never substitutes placeholder numbers. Wide layouts show the country
 panels side by side and narrow layouts stack them.
 
+Swiss cards show national BFS/SECO definitions republished via SNB, or the
+SNB's own policy rate and Confederation spot yield. They include original
+reporting period, dataset publication date and an official source link; GDP
+is explicitly `% QoQ`, unlike the US `% YoY`. Zero is displayed as zero and
+missing/null values as unavailable, never as a formatted zero. Source/cache
+freshness is not a claim that every observation is from the current month.
+
 ## Accessibility and delivery
 
 The page uses semantic landmarks, real labels, native forms, visible focus

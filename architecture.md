@@ -111,6 +111,23 @@ does not infer a missing value, copy a value between countries, or use Gemini
 to calculate a macroeconomic figure. The PWA renders the two country groups
 side by side on wider screens and stacked on narrow screens.
 
+Swiss data uses an allowlisted repository-local OpenBB Core Fetcher for the
+SNB data portal, including republished BFS CPI and SECO labour/GDP statistics.
+It retains national definitions, source links, original reporting periods and
+dataset publication time. Swiss real GDP is sports-event-adjusted QoQ, while
+US GDP remains YoY. No Swiss proxy fallback or new dependency is introduced;
+the current 2025-methodology Confederation spot-yield series replaces the
+discontinued monthly table. Exact series are in `docs/openbb-research.md`.
+
+### Deterministic task inbox
+
+Clear German/English capture/list commands are handled after pending HitL
+decisions and before research or Gemini. The same inbox writer serves explicit
+commands and Gemini's `capture_task` tool. A task is confirmed only after a
+successful file write; empty text and write errors have distinct response
+actions. Embedded whitespace is flattened into one Markdown checkbox record.
+Ambiguous memory/calendar or hypothetical phrasing remains ordinary chat.
+
 ### Mac capability zone
 
 `app/device/agent.py` is an outbound-only client. It opens no listener and

@@ -340,6 +340,7 @@ class EstimatesData:
 class MacroObservation:
     timestamp: datetime
     value: Decimal | None
+    period: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "timestamp", _utc(self.timestamp, "timestamp"))
@@ -355,11 +356,17 @@ class MacroSeries:
     as_of: datetime | None
     freshness: FreshnessStatus
     quality: DataQuality
+    definition: str | None = None
+    source_name: str | None = None
+    source_url: str | None = None
+    published_at: datetime | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "observations", tuple(sorted(self.observations, key=lambda item: item.timestamp)))
         if self.as_of is not None:
             object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
+        if self.published_at is not None:
+            object.__setattr__(self, "published_at", _utc(self.published_at, "published_at"))
 
 
 @dataclass(frozen=True, slots=True)
