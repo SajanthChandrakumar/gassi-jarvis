@@ -159,6 +159,7 @@ class AssetResearchReport:
     news: tuple[NewsArticle, ...] = ()
     filings: tuple[CompanyFiling, ...] = ()
     warnings: tuple[str, ...] = ()
+    price_history_total: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sections", tuple(self.sections))

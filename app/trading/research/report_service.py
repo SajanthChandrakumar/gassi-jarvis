@@ -64,6 +64,7 @@ class AssetResearchReportService:
         sources = self._sources(research_data, analysis.findings)
         sections = self._sections(research_data, selected, risks, coverage, sources)
         warnings = self._warnings(research_data, analysis, coverage)
+        price_history, price_history_total = self._price_history(research_data)
         return AssetResearchReport(
             asset=research_data.asset,
             depth=depth,
@@ -86,7 +87,8 @@ class AssetResearchReportService:
             as_of=self._as_of(research_data, analysis.findings),
             # This is the latest retained input retrieval time, not a wall-clock build time.
             generated_at=max((source.retrieved_at for source in sources), default=None),
-            price_history=self._price_history(research_data),
+            price_history=price_history,
+            price_history_total=price_history_total,
             earnings=research_data.earnings.observations if research_data.earnings is not None else (),
             news=research_data.news.articles if research_data.news is not None else (),
             filings=research_data.filings.items if research_data.filings is not None else (),
@@ -94,11 +96,15 @@ class AssetResearchReportService:
         )
 
     @staticmethod
-    def _price_history(data: AssetResearchData) -> tuple[ReportPricePoint, ...]:
+    def _price_history(data: AssetResearchData) -> tuple[tuple[ReportPricePoint, ...], int | None]:
         series = data.prices or (data.crypto.price_history if data.crypto is not None else None)
         if series is None:
-            return ()
-        return tuple(ReportPricePoint(bar.timestamp, bar.close) for bar in series.bars if bar.close is not None)[-180:]
+            return (), None
+        points = tuple(ReportPricePoint(bar.timestamp, bar.close) for bar in series.bars if bar.close is not None)
+        total = len(points)
+        if total <= 180:
+            return points, total
+        return tuple(points[index * (total - 1) // 179] for index in range(180)), total
 
     def _select_key_findings(self, analysis: ResearchAnalysis, limit: int) -> tuple[ResearchFinding, ...]:
         """Use Phase-3 order and the same category-cap diversity rule, without rescoring."""

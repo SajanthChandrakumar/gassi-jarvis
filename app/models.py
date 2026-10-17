@@ -84,7 +84,7 @@ class ResearchRunRequest(BaseModel):
     mode: Literal["asset", "compare", "history", "relationship"]
     asset: str = Field(..., min_length=1, max_length=16, pattern=r"^[A-Za-z0-9.\-]+$")
     benchmark: str | None = Field(None, min_length=1, max_length=16, pattern=r"^[A-Za-z0-9.\-]+$")
-    timeframe: Literal["6m", "1y", "2y", "5y", "all"] = "1y"
+    timeframe: Literal["1m", "3m", "6m", "1y", "2y", "5y", "all"] = "1y"
     analysis: Literal["correlation", "beta"] = "correlation"
 
     @model_validator(mode="after")
