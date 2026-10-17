@@ -148,19 +148,79 @@ def test_report_renderer_exposes_filings_news_and_section_context() -> None:
 
     for name in ("renderEarnings", "renderFilings", "renderDirectNews", "renderMacroContext", "renderProviderConfiguration", "renderContextPanel", "renderSectionNotice"):
         assert f"function {name}" in js
-    for heading in ("Recent filings", "Directly relevant news", "Sources", "Coverage"):
+    for heading in ("Recent filings", "Company news", "Sources", "Coverage"):
         assert heading in js
     assert "report.earnings" in js
     assert "item.unit" in js
 
 
+def test_stock_report_preserves_currency_null_and_safe_link_states() -> None:
+    js = _js()
+
+    assert "function safeHttpUrl" in js
+    assert "Currency unknown" in js
+    assert "function formatMoney(value, currency)" in js
+    assert "value === null || value === undefined || value === ''" in js
+    assert "['http:', 'https:'].includes(url.protocol)" in js
+
+
+def test_stock_report_chart_has_date_axes_accessible_selection_and_exact_data() -> None:
+    js = _js()
+
+    assert "function renderPriceHistory" in js
+    assert "price_history_total" in js
+    assert "role: 'group'" in js
+    assert "aria-live" in js
+    assert "ArrowLeft" in js and "ArrowRight" in js
+    assert "Exact closing-price data" in js
+    assert "Insufficient closing-price observations" in js
+    assert "Downsampled" in js
+
+
+def test_stock_report_renders_ordered_findings_risk_links_and_coverage() -> None:
+    js = _js()
+
+    assert "function renderKeyFindings" in js
+    assert "function renderRiskCoverage" in js
+    assert "report.key_findings" in js
+    assert "report.risks" in js
+    assert "finding_id" in js
+    assert "comparison_period" in js
+    assert "retrieved_at" in js
+    assert "missing_fields" in js
+    assert "failure.message" in js
+
+
+def test_stock_report_limits_sources_and_pairs_eps_from_one_historical_observation() -> None:
+    js = _js()
+
+    assert "function renderEpsComparison" in js
+    assert "reported_eps" in js and "estimated_eps" in js
+    assert "period_end" in js and "earnings_date" in js
+    assert "Reported actual" in js and "Provider estimate" in js
+    assert "No matched historical actual/estimate observations" in js
+    assert "slice(0, 3)" in js and "slice(0, 5)" in js
+    assert "function safeHttpUrl" in js
+
+
+def test_stock_report_uses_disclosures_and_responsive_chart_support_layout() -> None:
+    js, css = _js(), _css()
+
+    assert "function renderMetricSections" in js
+    assert "element('details'" in js
+    assert ".report-grid" in css
+    assert ".report-support" in css
+    assert "@media (max-width: 680px)" in css
+
+
 def test_ui_never_renders_raw_provider_plan_errors() -> None:
     js = _js()
 
-    for stale in ("Premium Query Parameter", "subscription page", "financialmodelingprep.com", "failure.message"):
+    for stale in ("Premium Query Parameter", "subscription page", "financialmodelingprep.com"):
         assert stale not in js
     assert "function safeProviderText" in js
     assert "textContent = safeProviderText(text)" in js
+    assert "safeProviderText(failure.message)" in js
 
 
 def test_command_center_has_command_first_prompt_and_research_modes() -> None:
