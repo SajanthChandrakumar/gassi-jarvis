@@ -1,0 +1,24 @@
+name: Dependency security audit
+on:
+  pull_request:
+  push:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        requirements: [requirements.txt, requirements-cloud.txt, requirements-device.txt]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - run: python -m pip install pip-audit==2.10.1
+      - run: python -m pip_audit --strict -r "${{ matrix.requirements }}"

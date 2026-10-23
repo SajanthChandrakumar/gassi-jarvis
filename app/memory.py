@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
+from chromadb.config import Settings
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +31,12 @@ log = logging.getLogger(__name__)
 _DEFAULT_BRAIN_DIR = Path(__file__).resolve().parent.parent / "jarvis_brain"
 BRAIN_DIR = os.environ.get("JARVIS_BRAIN_DIR", str(_DEFAULT_BRAIN_DIR))
 
-chroma_client = chromadb.PersistentClient(path=BRAIN_DIR)
+# Keep memory embedded even when CHROMA_API_IMPL is set in the environment.
+# Chroma's HTTP server has unpatched code-execution advisories (CVE-2026-45829).
+chroma_client = chromadb.PersistentClient(
+    path=BRAIN_DIR,
+    settings=Settings(chroma_api_impl="chromadb.api.rust.RustBindingsAPI"),
+)
 collection = chroma_client.get_or_create_collection(name="long_term_memory")
 
 

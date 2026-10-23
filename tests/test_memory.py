@@ -26,6 +26,11 @@ os.environ["JARVIS_SESSIONS_FILE"] = os.path.join(
 import app.memory as memory  # noqa: E402
 
 
+def test_memory_forces_embedded_chroma_backend():
+    # Environment settings must not redirect private memory to a remote API.
+    assert memory.chroma_client.get_settings().chroma_api_impl == "chromadb.api.rust.RustBindingsAPI"
+
+
 @pytest.fixture(autouse=True)
 def fresh_state(tmp_path):
     """Give every test an empty session store backed by a unique temp file."""
