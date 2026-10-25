@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from decimal import Decimal
 
 from app.trading.research.canonical import (
@@ -31,6 +32,17 @@ POLICY = StatisticalPolicy(
     minimum_hypothesis_observations=8,
     minimum_volatility_observations=8,
 )
+
+
+def test_returns_disclose_price_basis_and_unconverted_comparison_currencies():
+    engine = StatisticalResearchService(POLICY)
+    left = _prices("NVDA", [0.01, -0.02, 0.03] * 8)
+    right = _prices("NESN.SW", [0.02, -0.01, 0.04] * 8)
+    right = replace(right, asset=replace(right.asset, currency="CHF"), currency="CHF")
+    result = engine.correlation(left, right)
+
+    assert any("total return" in warning for warning in result.warnings)
+    assert any("currency" in warning.lower() and "CHF" in warning and "USD" in warning for warning in result.warnings)
 
 
 def _prices(symbol: str, returns: list[float], *, start: int = 0) -> PriceSeries:

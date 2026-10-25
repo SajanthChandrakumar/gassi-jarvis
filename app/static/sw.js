@@ -10,11 +10,11 @@
  *   - /static/* assets: network-first so updates appear immediately, with an
  *     offline cache fallback.
  */
-const CACHE = 'jarvis-command-center-v9';
+const CACHE = 'jarvis-command-center-v14';
 const SHELL = [
     '/',
-    '/static/styles.css?v=9',
-    '/static/app.js?v=9',
+    '/static/styles.css?v=12',
+    '/static/app.js?v=12',
     '/static/manifest.json',
     '/static/icon-192.png',
     '/static/icon-512.png',

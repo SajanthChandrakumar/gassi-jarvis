@@ -70,9 +70,20 @@ class ResearchRequest:
     analyses: tuple[ResearchAnalysisType, ...] = ()
     report_depth: ReportDepth = ReportDepth.STANDARD
     parameters: tuple[tuple[str, str], ...] = ()
+    asset_type: CanonicalAssetType | None = None
+    exchange: str | None = None
+    currency: str | None = None
+    benchmark_asset_type: CanonicalAssetType | None = None
+    benchmark_exchange: str | None = None
+    benchmark_currency: str | None = None
+    refresh: bool = False
 
     def __post_init__(self) -> None:
-        assets = tuple(dict.fromkeys(item.strip() for item in self.assets if item and item.strip()))
+        # Comparison legs may share ticker text but have distinct selected
+        # types/listings. Keep positional identity hints attached to both legs.
+        assets = tuple(item.strip() for item in self.assets if item and item.strip())
+        if self.intent not in {ResearchIntent.ASSET_COMPARISON, ResearchIntent.STATISTICAL_RELATIONSHIP}:
+            assets = tuple(dict.fromkeys(assets))
         if not assets:
             raise ValueError("research request needs at least one asset")
         if not isinstance(self.intent, ResearchIntent):
@@ -86,6 +97,17 @@ class ResearchRequest:
         object.__setattr__(self, "timeframe", self.timeframe.strip().lower() if self.timeframe else None)
         object.__setattr__(self, "analyses", tuple(dict.fromkeys(self.analyses)))
         object.__setattr__(self, "parameters", tuple(sorted((str(key), str(value)) for key, value in self.parameters)))
+        for field_name in ("asset_type", "benchmark_asset_type"):
+            asset_type = getattr(self, field_name)
+            if asset_type is not None and not isinstance(asset_type, CanonicalAssetType):
+                object.__setattr__(self, field_name, CanonicalAssetType(asset_type))
+        for field_name in ("exchange", "currency", "benchmark_exchange", "benchmark_currency"):
+            value = getattr(self, field_name)
+            if value is not None:
+                normalized = value.strip()
+                if not normalized:
+                    raise ValueError(f"{field_name} cannot be blank")
+                object.__setattr__(self, field_name, normalized)
 
     @property
     def parameter_map(self) -> dict[str, str]:
@@ -180,19 +202,31 @@ class AssetResolver:
         "nasdaq 100": ("QQQ", CanonicalAssetType.ETF, True),
     }
 
-    def resolve(self, mention: str) -> AssetResolution:
+    def resolve(
+        self,
+        mention: str,
+        *,
+        asset_type: CanonicalAssetType | None = None,
+        exchange: str | None = None,
+        currency: str | None = None,
+    ) -> AssetResolution:
         normalized = " ".join(mention.strip().lower().split())
         if not normalized:
             return AssetResolution(mention, ResolutionStatus.UNKNOWN, message="No asset identifier was provided.")
+        if asset_type is not None:
+            selected_type = asset_type if isinstance(asset_type, CanonicalAssetType) else CanonicalAssetType(asset_type)
+            if selected_type not in {CanonicalAssetType.EQUITY, CanonicalAssetType.ETF, CanonicalAssetType.CRYPTO}:
+                return AssetResolution(mention, ResolutionStatus.UNKNOWN, message="The selected asset category is not supported for research.")
+            return AssetResolution(mention, ResolutionStatus.RESOLVED, AssetIdentity(mention.strip(), selected_type, exchange=exchange, currency=currency))
         mapped = self._DEFAULTS.get(normalized)
         if mapped:
             symbol, asset_type, assumed = mapped
             message = "'Nasdaq' was resolved to the documented QQQ ETF benchmark default." if assumed else None
-            return AssetResolution(mention, ResolutionStatus.RESOLVED, AssetIdentity(symbol, asset_type), message=message, assumed_default=assumed)
+            return AssetResolution(mention, ResolutionStatus.RESOLVED, AssetIdentity(symbol, asset_type, exchange=exchange, currency=currency), message=message, assumed_default=assumed)
         if re.fullmatch(r"[A-Za-z][A-Za-z0-9.\-]{0,14}", mention.strip()):
             symbol = mention.strip().upper().replace("-USD", "")
             asset_type = CanonicalAssetType.CRYPTO if symbol in {"BTC", "ETH", "SOL", "XRP", "DOGE"} else CanonicalAssetType.EQUITY
-            return AssetResolution(mention, ResolutionStatus.RESOLVED, AssetIdentity(symbol, asset_type))
+            return AssetResolution(mention, ResolutionStatus.RESOLVED, AssetIdentity(symbol, asset_type, exchange=exchange, currency=currency))
         return AssetResolution(mention, ResolutionStatus.AMBIGUOUS, message="Asset mention is ambiguous; provide a ticker or a supported common name.")
 
 
@@ -299,14 +333,14 @@ class ResearchOrchestrator:
         self.validator = validator or ResearchResponseValidator()
 
     def execute(self, request: ResearchRequest) -> ResearchResponse:
-        resolutions = tuple(self.resolver.resolve(item) for item in request.assets + ((request.benchmark,) if request.benchmark else ()))
+        resolutions = self._resolve_assets(request)
         if any(item.status is not ResolutionStatus.RESOLVED for item in resolutions):
             return self.validator.validate(ResearchResponse(request, RequestStatus.AMBIGUOUS, resolutions, None, warnings=tuple(item.message for item in resolutions if item.message), trace=(ExecutionTrace("asset_resolution", RequestStatus.AMBIGUOUS, "Research was not fetched for unresolved assets."),)))
         plan = self.planner.plan(request)
         warnings = [item.message for item in resolutions if item.message]
         traces: list[ExecutionTrace] = [ExecutionTrace("asset_resolution", RequestStatus.SUCCESS)]
         try:
-            data = tuple(self._fetch(item.asset, plan) for item in resolutions if item.asset)
+            data = tuple(self._fetch(item.asset, plan, refresh=request.refresh) for item in resolutions if item.asset)
             traces.append(ExecutionTrace("canonical_data", RequestStatus.SUCCESS))
         except Exception as exc:
             message = getattr(exc, "public_message", "Canonical research data could not be retrieved.")
@@ -323,14 +357,18 @@ class ResearchOrchestrator:
                 reports = tuple(self._report(item, request.report_depth) for item in data)
                 comparison = self._comparison(reports[0], reports[1]) if request.intent is ResearchIntent.ASSET_COMPARISON else None
                 report_warnings = [warning for report in reports for warning in report.warnings]
-                response = ResearchResponse(request, RequestStatus.PARTIAL if any(report.data_quality.status.value != "complete" for report in reports) else RequestStatus.SUCCESS, resolutions, plan, reports=reports, comparison=comparison, warnings=tuple(warnings + report_warnings + (list(comparison.warnings) if comparison else [])), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("relevance_and_report", RequestStatus.SUCCESS)]))
+                response = ResearchResponse(request, RequestStatus.PARTIAL if any(report.is_partial or report.data_quality.status.value != "complete" for report in reports) else RequestStatus.SUCCESS, resolutions, plan, reports=reports, comparison=comparison, warnings=tuple(warnings + report_warnings + (list(comparison.warnings) if comparison else [])), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("relevance_and_report", RequestStatus.SUCCESS)]))
             return self.validator.validate(response)
         except Exception as exc:
             message = getattr(exc, "public_message", "Part of the research report could not be produced.")
             return self.validator.validate(ResearchResponse(request, RequestStatus.PARTIAL, resolutions, plan, warnings=tuple(warnings + [message]), sources=self._sources(data), trace=tuple(traces + [ExecutionTrace("research_execution", RequestStatus.PARTIAL, type(exc).__name__)])))
 
-    def _fetch(self, asset: AssetIdentity, plan: ResearchPlan) -> AssetResearchData:
-        provider_type = "crypto" if asset.asset_type is CanonicalAssetType.CRYPTO else "equity"
+    def _fetch(self, asset: AssetIdentity, plan: ResearchPlan, *, refresh: bool = False) -> AssetResearchData:
+        provider_type = asset.asset_type.value if asset.asset_type in {
+            CanonicalAssetType.EQUITY,
+            CanonicalAssetType.ETF,
+            CanonicalAssetType.CRYPTO,
+        } else "equity"
         sections = plan.sections
         # Asset reports and comparisons must not request equity-only sections
         # for canonical crypto assets. Historical/statistical workflows keep
@@ -342,7 +380,34 @@ class ResearchOrchestrator:
             ResearchIntent.STATISTICAL_RELATIONSHIP,
         }:
             sections = ("crypto",)
-        return self.canonical_service.get_asset_research_data(asset.symbol, asset_type=provider_type, sections=sections, start_date=plan.timeframe_start, end_date=plan.timeframe_end)
+        identity = {key: value for key, value in {"exchange": asset.exchange, "currency": asset.currency}.items() if value is not None}
+        if refresh:
+            identity["refresh"] = True
+        return self.canonical_service.get_asset_research_data(asset.symbol, asset_type=provider_type, sections=sections, start_date=plan.timeframe_start, end_date=plan.timeframe_end, **identity)
+
+    def _resolve_assets(self, request: ResearchRequest) -> tuple[AssetResolution, ...]:
+        resolutions: list[AssetResolution] = []
+        for index, mention in enumerate(request.assets):
+            if index == 0:
+                hints = (request.asset_type, request.exchange, request.currency)
+            elif request.intent is ResearchIntent.ASSET_COMPARISON and index == 1:
+                hints = (request.benchmark_asset_type, request.benchmark_exchange, request.benchmark_currency)
+            else:
+                hints = (None, None, None)
+            resolutions.append(self.resolver.resolve(
+                mention,
+                asset_type=hints[0],
+                exchange=hints[1],
+                currency=hints[2],
+            ))
+        if request.benchmark:
+            resolutions.append(self.resolver.resolve(
+                request.benchmark,
+                asset_type=request.benchmark_asset_type,
+                exchange=request.benchmark_exchange,
+                currency=request.benchmark_currency,
+            ))
+        return tuple(resolutions)
 
     def _report(self, data: AssetResearchData, depth: ReportDepth) -> AssetResearchReport:
         return self.reports.build_asset_report(research_data=data, analysis=self.relevance.analyze(data), depth=depth)
@@ -370,7 +435,7 @@ class ResearchOrchestrator:
     def _sources(data: Iterable[AssetResearchData]) -> tuple[ResearchProvenance, ...]:
         sources = []
         for item in data:
-            for section in (item.quote, item.prices, item.profile, item.fundamentals, item.valuation, item.earnings, item.estimates, item.filings, item.news, item.crypto):
+            for section in (item.quote, item.prices, item.profile, item.fund_profile, item.fund_composition, item.fundamentals, item.valuation, item.earnings, item.estimates, item.filings, item.news, item.crypto):
                 if section is not None and section.provenance is not None:
                     sources.append(section.provenance)
         return tuple(sources)
@@ -383,14 +448,69 @@ class ResearchOrchestrator:
     @staticmethod
     def _comparison(left: AssetResearchReport, right: AssetResearchReport) -> AssetComparison:
         dimensions: list[ComparisonDimension] = []
-        for category in ("growth", "profitability", "valuation", "earnings", "market_behavior", "risk"):
+        for category in ("fundamentals", "fund_characteristics", "growth", "profitability", "valuation", "earnings", "market_behavior", "price_trend", "market_structure", "risk"):
             left_metrics = tuple(metric for section in left.sections if section.key == category for metric in section.metrics)
             right_metrics = tuple(metric for section in right.sections if section.key == category for metric in section.metrics)
-            compatible = bool(left_metrics and right_metrics and {item.key for item in left_metrics} == {item.key for item in right_metrics})
-            warning = None if compatible or (not left_metrics and not right_metrics) else "Metrics are unavailable or not definition-compatible for comparison."
+            same_metrics = {item.key for item in left_metrics} == {item.key for item in right_metrics}
+            if not left_metrics and not right_metrics:
+                compatible, warning = True, None
+            elif not left_metrics or not right_metrics or not same_metrics:
+                compatible, warning = False, "Metrics are unavailable or not definition-compatible for comparison."
+            else:
+                left_by_key = {item.key: item for item in left_metrics}
+                right_by_key = {item.key: item for item in right_metrics}
+                pairs = tuple((left_by_key[key], right_by_key[key]) for key in sorted(left_by_key))
+                if any(left_metric.unit != right_metric.unit for left_metric, right_metric in pairs):
+                    compatible, warning = False, "Matched metrics have different units."
+                elif any(left_metric.period != right_metric.period for left_metric, right_metric in pairs):
+                    compatible, warning = False, "Matched metrics use different comparison periods."
+                elif category == "fundamentals" and any(not left_metric.period or not right_metric.period for left_metric, right_metric in pairs):
+                    compatible, warning = False, "Financial comparison periods are unknown."
+                elif category == "market_structure" and left.asset.symbol != right.asset.symbol and any(left_metric.key in {"crypto_circulating_supply", "crypto_total_supply", "crypto_max_supply"} for left_metric, _ in pairs):
+                    compatible, warning = False, "Token supply counts refer to different assets and are not directly comparable."
+                elif any(
+                    ResearchOrchestrator._is_monetary_metric(left_metric.key)
+                    and not ResearchOrchestrator._same_currency(left, right, left_metric, right_metric)
+                    for left_metric, right_metric in pairs
+                ):
+                    compatible, warning = False, "Monetary metrics use different or unknown currencies; no currency conversion was applied."
+                else:
+                    compatible, warning = True, None
             dimensions.append(ComparisonDimension(category, left_metrics, right_metrics, compatible, warning))
         warnings = tuple(item.warning for item in dimensions if item.warning)
         return AssetComparison(left, right, tuple(dimensions), warnings)
+
+    @staticmethod
+    def _is_monetary_metric(key: str) -> bool:
+        return key in {
+            "market_cap", "crypto_market_cap", "assets_under_management", "nav", "dividend_rate_ttm", "last_price", "previous_close", "year_high", "year_low",
+            "revenue", "operating_income", "net_income", "gross_profit", "ebitda",
+            "free_cash_flow", "operating_cash_flow", "cash", "total_assets",
+            "total_liabilities", "total_debt", "assets_under_management", "nav",
+            "dividend_rate_ttm", "reported_eps", "estimated_eps", "reported_revenue",
+            "estimated_revenue",
+        } or key.endswith(("_revenue", "_income", "_cash_flow", "_debt", "_assets", "_liabilities"))
+
+    @staticmethod
+    def _same_currency(left, right, left_metric: ReportMetric, right_metric: ReportMetric) -> bool:
+        left_unit = left_metric.unit
+        right_unit = right_metric.unit
+        currency_code = re.compile(r"[A-Za-z]{3}")
+        if left_unit and right_unit and currency_code.fullmatch(left_unit) and currency_code.fullmatch(right_unit):
+            return left_unit == right_unit
+        if any(unit is not None and unit.casefold() == "unknown" for unit in (left_unit, right_unit)):
+            return False
+        if left_unit is not None or right_unit is not None:
+            return False
+
+        # Only price observations are known to use the listing's quote currency.
+        # For financial metrics, listing currency is not a safe proxy for the
+        # currency used in the provider's reported value.
+        if left_metric.key not in {"last_price", "previous_close", "year_high", "year_low"}:
+            return False
+        left_currency = left.asset.currency
+        right_currency = right.asset.currency
+        return bool(left_currency and right_currency and left_currency == right_currency)
 
 
 def parse_research_question(question: str) -> ResearchRequest:

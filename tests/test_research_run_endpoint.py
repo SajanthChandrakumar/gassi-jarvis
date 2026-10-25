@@ -15,6 +15,7 @@ from app.trading.research.orchestration import (
     ResearchResponse,
     RequestStatus,
 )  # noqa: E402
+from app.trading.research.search import AssetSearchError  # noqa: E402
 
 
 class FakeResearchTools:
@@ -117,3 +118,141 @@ def test_research_run_rejects_missing_benchmark_for_comparison(monkeypatch):
     )
 
     assert response.status_code == 422
+
+
+def test_research_run_preserves_selected_asset_and_benchmark_identity(monkeypatch):
+    token = "research-run-token"
+    fake = FakeResearchTools()
+    monkeypatch.setattr(main_module, "API_TOKEN", token)
+    monkeypatch.setattr(main_module, "research_tools", fake)
+    client = TestClient(main_module.app)
+
+    response = client.post(
+        "/api/research/run",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "mode": "compare",
+            "asset": "VWRL",
+            "benchmark": "BTC-USD",
+            "asset_type": "etf",
+            "exchange": "XLON",
+            "currency": "GBP",
+            "benchmark_asset_type": "crypto",
+            "benchmark_exchange": "CCC",
+            "benchmark_currency": "USD",
+            "refresh": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake.calls == [
+        (
+            "compare_assets",
+            {
+                "left_asset": "VWRL",
+                "right_asset": "BTC-USD",
+                "timeframe": "1y",
+                "asset_type": "etf",
+                "exchange": "XLON",
+                "currency": "GBP",
+                "benchmark_asset_type": "crypto",
+                "benchmark_exchange": "CCC",
+                "benchmark_currency": "USD",
+                "refresh": True,
+            },
+        )
+    ]
+
+
+def test_research_search_returns_typed_choices_and_requires_authentication(monkeypatch):
+    class FakeAssetSearch:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, *, asset_type):
+            self.calls.append((query, asset_type))
+            return {
+                "query": query,
+                "results": [{
+                    "symbol": "NVDA",
+                    "name": "NVIDIA Corporation",
+                    "exchange": None,
+                    "currency": None,
+                    "asset_type": "equity",
+                    "isin": None,
+                }],
+                "provider": "sec",
+            }
+
+    token = "research-search-token"
+    fake = FakeAssetSearch()
+    monkeypatch.setattr(main_module, "API_TOKEN", token)
+    monkeypatch.setattr(main_module, "asset_search", fake, raising=False)
+    client = TestClient(main_module.app)
+
+    unauthorized = client.get("/api/research/search?query=NVDA&asset_type=equity")
+    response = client.get(
+        "/api/research/search?query=NVDA&asset_type=equity",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json() == {
+        "query": "NVDA",
+        "results": [{
+            "symbol": "NVDA",
+            "name": "NVIDIA Corporation",
+            "exchange": None,
+            "currency": None,
+            "asset_type": "equity",
+            "isin": None,
+        }],
+        "provider": "sec",
+    }
+    assert fake.calls == [("NVDA", "equity")]
+
+
+def test_research_search_rejects_whitespace_without_calling_provider(monkeypatch):
+    class FakeAssetSearch:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, *, asset_type):
+            self.calls.append((query, asset_type))
+            return {"query": query, "results": [], "provider": "yfinance"}
+
+    token = "research-search-token"
+    fake = FakeAssetSearch()
+    monkeypatch.setattr(main_module, "API_TOKEN", token)
+    monkeypatch.setattr(main_module, "asset_search", fake, raising=False)
+    client = TestClient(main_module.app)
+
+    response = client.get(
+        "/api/research/search?query=%20%20&asset_type=etf",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 422
+    assert fake.calls == []
+
+
+def test_research_search_hides_provider_error_details(monkeypatch):
+    class FailedSearch:
+        def search(self, query, *, asset_type):
+            raise AssetSearchError("Asset search is currently unavailable for the selected category.")
+
+    token = "research-search-token"
+    monkeypatch.setattr(main_module, "API_TOKEN", token)
+    monkeypatch.setattr(main_module, "asset_search", FailedSearch(), raising=False)
+    client = TestClient(main_module.app)
+
+    response = client.get(
+        "/api/research/search?query=Bitcoin&asset_type=crypto",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Asset search is currently unavailable for the selected category."
+    }

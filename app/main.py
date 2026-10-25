@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import secrets
+from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 # aiohttp/OpenBB can create its shared TLS context while importing other
@@ -35,13 +36,14 @@ if certifi is not None:
     os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 
 import edge_tts
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
+from starlette.concurrency import run_in_threadpool
 
 from app.logging_config import setup_logging
 from app.models import ChatRequest, ChatResponse, RecentMemoriesResponse, ResearchRunRequest
@@ -75,6 +77,7 @@ from app.trading.research.jarvis_tools import (
     response_payload,
 )
 from app.trading.research.provider_status import provider_status_payload
+from app.trading.research.search import AssetSearchError, OpenBBAssetSearchClient
 
 setup_logging()
 log = logging.getLogger(__name__)
@@ -82,6 +85,7 @@ log = logging.getLogger(__name__)
 # The OpenBB client behind this adapter is lazy; construction itself performs
 # neither network access nor financial calculations.
 research_tools = JarvisResearchTools()
+asset_search = OpenBBAssetSearchClient()
 
 # ─── Server Setup ─────────────────────────────────────────────────────────────
 
@@ -456,26 +460,63 @@ async def research_provider_status(request: Request) -> dict[str, list[dict[str,
     return provider_status_payload()
 
 
+@app.get("/api/research/search", dependencies=[Depends(verify_token)])
+@limiter.limit("30/minute")
+async def research_asset_search(
+    request: Request,
+    query: str = Query(..., min_length=1, max_length=100),
+    asset_type: Literal["equity", "etf", "crypto"] = Query(...),
+) -> dict:
+    """Return bounded, provider-observed asset choices for the research UI."""
+    if not query.strip():
+        raise HTTPException(status_code=422, detail="query must contain a search term")
+    try:
+        return await run_in_threadpool(asset_search.search, query, asset_type=asset_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except AssetSearchError as exc:
+        raise HTTPException(status_code=503, detail=exc.public_message) from exc
+
+
 @app.get("/api/research/macro", dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
 async def research_macro_context(request: Request) -> dict[str, list[dict]]:
     """Return a compact canonical macro context without invoking Gemini."""
-    return macro_context_payload(research_tools.orchestrator.canonical_service)
+    return await run_in_threadpool(macro_context_payload, research_tools.orchestrator.canonical_service)
 
 
 @app.post("/api/research/run", response_model=ChatResponse, dependencies=[Depends(verify_token)])
 @limiter.limit("20/minute")
 async def run_research_workflow(request: Request, research: ResearchRunRequest) -> dict:
     """Run a validated read-only research workflow without relying on LLM routing."""
+    asset_identity = {
+        key: value
+        for key, value in {
+            "asset_type": research.asset_type,
+            "exchange": research.exchange,
+            "currency": research.currency,
+        }.items()
+        if value is not None
+    }
+    benchmark_identity = {
+        key: value
+        for key, value in {
+            "benchmark_asset_type": research.benchmark_asset_type,
+            "benchmark_exchange": research.benchmark_exchange,
+            "benchmark_currency": research.benchmark_currency,
+        }.items()
+        if value is not None
+    }
+    refresh = {"refresh": True} if research.refresh else {}
     if research.mode == "asset":
-        name, arguments = "research_asset", {"asset": research.asset, "timeframe": research.timeframe}
+        name, arguments = "research_asset", {"asset": research.asset, "timeframe": research.timeframe, **asset_identity, **refresh}
     elif research.mode == "compare":
-        name, arguments = "compare_assets", {"left_asset": research.asset, "right_asset": research.benchmark, "timeframe": research.timeframe}
+        name, arguments = "compare_assets", {"left_asset": research.asset, "right_asset": research.benchmark, "timeframe": research.timeframe, **asset_identity, **benchmark_identity, **refresh}
     elif research.mode == "history":
-        name, arguments = "research_history", {"asset": research.asset, "timeframe": research.timeframe}
+        name, arguments = "research_history", {"asset": research.asset, "timeframe": research.timeframe, **asset_identity, **refresh}
     else:
-        name, arguments = "analyze_relationship", {"asset": research.asset, "benchmark": research.benchmark, "timeframe": research.timeframe, "analysis": research.analysis}
-    response = research_tools.dispatch(name, arguments)
+        name, arguments = "analyze_relationship", {"asset": research.asset, "benchmark": research.benchmark, "timeframe": research.timeframe, "analysis": research.analysis, **asset_identity, **benchmark_identity, **refresh}
+    response = await run_in_threadpool(research_tools.dispatch, name, arguments)
     return await _build_response(
         render_research_response(response),
         action=f"finance_research:{name}",

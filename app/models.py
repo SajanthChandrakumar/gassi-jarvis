@@ -86,6 +86,13 @@ class ResearchRunRequest(BaseModel):
     benchmark: str | None = Field(None, min_length=1, max_length=16, pattern=r"^[A-Za-z0-9.\-]+$")
     timeframe: Literal["1m", "3m", "6m", "1y", "2y", "5y", "all"] = "1y"
     analysis: Literal["correlation", "beta"] = "correlation"
+    asset_type: Literal["equity", "etf", "crypto"] | None = None
+    exchange: str | None = Field(None, min_length=1, max_length=32, pattern=r"^[A-Za-z0-9.\-]+$")
+    currency: str | None = Field(None, min_length=1, max_length=8, pattern=r"^[A-Za-z0-9.\-]+$")
+    benchmark_asset_type: Literal["equity", "etf", "crypto"] | None = None
+    benchmark_exchange: str | None = Field(None, min_length=1, max_length=32, pattern=r"^[A-Za-z0-9.\-]+$")
+    benchmark_currency: str | None = Field(None, min_length=1, max_length=8, pattern=r"^[A-Za-z0-9.\-]+$")
+    refresh: bool = False
 
     @model_validator(mode="after")
     def require_second_asset(self):

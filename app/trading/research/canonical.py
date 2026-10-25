@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .fund_composition import FundComposition
 
 
 class CanonicalAssetType(StrEnum):
@@ -196,6 +199,61 @@ class CompanyProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class FundProfile:
+    """Observed ETF information; unsupported fields remain absent."""
+
+    asset: AssetIdentity
+    name: str | None
+    issuer: str | None
+    fund_family: str | None
+    objective: str | None
+    benchmark: str | None
+    expense_ratio: Decimal | None
+    assets_under_management: Decimal | None
+    nav: Decimal | None
+    distribution_frequency: str | None
+    dividend_yield: Decimal | None
+    dividend_yield_ttm: Decimal | None
+    dividend_rate_ttm: Decimal | None
+    replication_method: str | None
+    currency: str | None
+    exchange: str | None
+    inception_date: datetime | None
+    as_of: datetime | None
+    provenance: ResearchProvenance
+    freshness: FreshnessStatus
+    quality: DataQuality
+    website: str | None = None
+    assets_under_management_currency: str | None = None
+    nav_currency: str | None = None
+    description: str | None = None
+    sponsor: str | None = None
+    trustee: str | None = None
+    investment_geography: str | None = None
+    assets_under_management_as_of: datetime | None = None
+    nav_as_of: datetime | None = None
+    distribution_yield: Decimal | None = None
+    distribution_yield_as_of: datetime | None = None
+
+    def __post_init__(self) -> None:
+        for field in (
+            "name", "issuer", "fund_family", "objective", "benchmark",
+            "distribution_frequency", "replication_method", "currency", "exchange",
+            "website",
+            "assets_under_management_currency", "nav_currency",
+            "description",
+            "sponsor", "trustee", "investment_geography",
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, _identifier(value, field))
+        for field in ("inception_date", "as_of", "assets_under_management_as_of", "nav_as_of", "distribution_yield_as_of"):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, _utc(value, field))
+
+
+@dataclass(frozen=True, slots=True)
 class FinancialStatement:
     statement_type: str
     period_end: datetime | None
@@ -205,6 +263,7 @@ class FinancialStatement:
     fiscal_quarter: int | None = None
     reported_at: datetime | None = None
     native_fields: tuple[tuple[str, Any], ...] = ()
+    currency: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "statement_type", _identifier(self.statement_type, "statement_type"))
@@ -214,6 +273,8 @@ class FinancialStatement:
             object.__setattr__(self, "reported_at", _utc(self.reported_at, "reported_at"))
         object.__setattr__(self, "values", tuple(sorted(self.values)))
         object.__setattr__(self, "native_fields", tuple(sorted(self.native_fields, key=lambda item: item[0])))
+        if self.currency is not None:
+            object.__setattr__(self, "currency", _identifier(self.currency, "currency"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,6 +440,15 @@ class CryptoMarketData:
     provenance: ResearchProvenance
     freshness: FreshnessStatus
     quality: DataQuality
+    max_supply: Decimal | None = None
+    currency: str | None = None
+    market_cap_currency: str | None = None
+
+    def __post_init__(self) -> None:
+        for field in ("currency", "market_cap_currency"):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, _identifier(value, field))
 
 
 @dataclass(frozen=True, slots=True)
@@ -404,5 +474,8 @@ class AssetResearchData:
     filings: CompanyFilings | None = None
     estimates: EstimatesData | None = None
     crypto: CryptoMarketData | None = None
+    fund_profile: FundProfile | None = None
+    fund_composition: FundComposition | None = None
     failures: tuple[SectionFailure, ...] = ()
     quality: DataQuality = DataQuality(QualityStatus.COMPLETE)
+    fund_profile_secondary: FundProfile | None = None

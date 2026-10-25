@@ -1,5 +1,13 @@
 # Canonical Research Data Model (Phase 2)
 
+The optional SPY issuer profile preserves separately labeled sponsor, trustee,
+investment-region classification, NAV/AUM dates and currencies, and NAV-based
+trailing distribution yield/date. `fund_profile_secondary` retains the original
+Yahoo profile with its own provenance. No source's fields are silently assigned
+to another provider. Official compositions carry `is_complete`, their original
+holdings link and independent holdings/sector observation dates. A cash holding
+can have no ticker; its observed name and weight remain intact.
+
 ## Boundary and hierarchy
 
 Phase 1 retrieves provider-specific `ResearchData` through OpenBB. Phase 2
@@ -30,8 +38,14 @@ selective aggregation. Gemini is not part of this path.
 - `FundamentalsData` and `FinancialStatement`: income, balance-sheet, and
   cash-flow observations with canonical high-value concepts such as revenue,
   operating income, net income, free cash flow, total assets, debt, cash, and
-  equity. Provider fields that are not safely normalized are retained per
-  observation as `native_fields`.
+  equity. Provider-reported currency is optional and never inferred. Provider
+  fields that are not safely normalized are retained per observation as
+  `native_fields`.
+- `FundProfile`: observed ETF name, issuer, fund family, objective, benchmark,
+  fee, AUM, NAV, distribution frequency, dividend fields, replication method,
+  listing currency/exchange, inception date, and an observed provider website.
+  AUM/NAV currency are separate optional fields and stay absent unless the
+  provider supplies them directly.
 - `ValuationData`: optional market-cap, enterprise-value, P/E, forward P/E,
   price-to-sales, price-to-book, EV/EBITDA, and free-cash-flow-yield values.
 - `EarningsData` and `EstimatesData`: distinct actual/estimate fields.
@@ -51,7 +65,8 @@ selective aggregation. Gemini is not part of this path.
   optional supply/market-cap fields, without inventing unsupported derivatives
   data.
 - `AssetResearchData`: selective aggregate of requested asset sections and
-  explicit `SectionFailure` records for optional failures.
+  explicit `SectionFailure` records for optional failures. ETF research has a
+  distinct `fund` section; it does not reuse company fundamentals as fund data.
 
 ## Provenance, as-of, and missing values
 
@@ -76,7 +91,11 @@ error. Empty data, provider failure, and omitted sections remain distinct.
 `DataQuality` is deterministic: `complete`, `partial`, `empty`, `stale`, or
 `error`, with warnings and missing-field names. `FreshnessStatus` is `fresh`,
 `stale`, or `unknown` and is calculated from `retrieved_at` against the
-configurable `FreshnessPolicy`.
+configurable `FreshnessPolicy`. ETF info, fund composition and crypto info use
+a one-day retrieval TTL. A fresh retrieval does not establish an unknown
+portfolio observation date. `FundComposition` separately preserves up to ten
+observed holdings and sector weights as fractions, source provenance and the
+unknown portfolio date; it does not represent a complete portfolio.
 
 The default policy is deliberately centralized, not hidden in normalizers:
 quotes and intraday prices 15 minutes, daily prices and filings 1 day, profile 7
@@ -101,7 +120,7 @@ quality fields. `refresh=True` bypasses the cache and replaces the entry.
 
 `CanonicalResearchService.get_asset_research_data` takes only the requested
 sections (`quote`, `prices`, `profile`, `fundamentals`, `valuation`, `earnings`,
-`estimates`, `filings`, `news`, and `crypto`). It does not fetch every possible dataset. A failure
+`estimates`, `filings`, `news`, `crypto`, and `fund`). It does not fetch every possible dataset. A failure
 in one optional section creates a `SectionFailure` while independent successful
 sections remain available. `get_macro_series` returns a standalone canonical
 macro series because macro context is not an equity-shaped asset section.

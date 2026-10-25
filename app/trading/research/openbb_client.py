@@ -17,7 +17,7 @@ from typing import Any, Literal
 from .canonical import ProviderAttempt
 
 
-AssetType = Literal["equity", "crypto", "macro"]
+AssetType = Literal["equity", "etf", "crypto", "macro"]
 
 
 def _configure_tls_ca_bundle() -> None:
@@ -45,6 +45,8 @@ class ResearchProviderSettings:
     earnings: tuple[str, ...] = ()
     filings: tuple[str, ...] = ("sec",)
     crypto: tuple[str, ...] = ("yfinance",)
+    etf_price: tuple[str, ...] = ("yfinance",)
+    etf_info: tuple[str, ...] = ("yfinance",)
     macro: tuple[str, ...] = ("econdb",)
 
     @classmethod
@@ -62,6 +64,9 @@ class ResearchProviderSettings:
             earnings=(("fmp",) if has_fmp else ()),
             filings=("sec",),
             crypto=("yfinance",),
+            etf_price=("yfinance",),
+            # ETF metadata can be returned by Yahoo without enabling paid FMP.
+            etf_info=("yfinance",),
             macro=(("fred",) if has_fred else ()) + ("econdb",),
         )
 
@@ -167,6 +172,15 @@ def _date_value(value: date | datetime | str | None) -> str | None:
     return value
 
 
+def _yahoo_crypto_symbol(symbol: str) -> str:
+    if "-" in symbol:
+        return symbol
+    upper_symbol = symbol.upper()
+    if upper_symbol.endswith("USD") and len(upper_symbol) > 3:
+        return f"{upper_symbol[:-3]}-USD"
+    return f"{upper_symbol}-USD"
+
+
 def _json_value(value: Any) -> Any:
     """Convert OpenBB/Pydantic result values into structured JSON-safe values."""
     if isinstance(value, (datetime, date)):
@@ -190,6 +204,11 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     )
 
 
+def _merge_non_null(primary: Mapping[str, Any], supplement: Mapping[str, Any]) -> dict[str, Any]:
+    """Fill or replace observed values without erasing data with nulls."""
+    return {**primary, **{key: value for key, value in supplement.items() if value is not None}}
+
+
 class OpenBBResearchClient:
     """Expose a deliberately small research-facing interface over OpenBB."""
 
@@ -200,6 +219,11 @@ class OpenBBResearchClient:
     ) -> None:
         self._openbb_client = openbb_client
         self._provider_settings = provider_settings or ResearchProviderSettings.from_environment()
+
+    def get_fund_composition(self, symbol: str) -> ResearchData:
+        """Observed top holdings via the local OpenBB Yahoo Fetcher extension."""
+        from .fund_composition import fetch_fund_composition
+        return fetch_fund_composition(symbol)
 
     @property
     def _obb(self) -> Any:
@@ -218,33 +242,37 @@ class OpenBBResearchClient:
         self,
         symbol: str,
         *,
-        asset_type: Literal["equity", "crypto"] = "equity",
+        asset_type: Literal["equity", "etf", "crypto"] = "equity",
         start_date: date | datetime | str | None = None,
         end_date: date | datetime | str | None = None,
         interval: str | None = None,
         provider: str | None = None,
     ) -> ResearchData:
         """Return raw OHLCV history for an equity/ETF or crypto pair."""
-        if asset_type not in {"equity", "crypto"}:
+        if asset_type not in {"equity", "etf", "crypto"}:
             raise ResearchConfigurationError(f"Unsupported price asset type: {asset_type}")
 
         endpoint = (
             self._obb.equity.price.historical
-            if asset_type == "equity"
+            if asset_type in {"equity", "etf"}
             else self._obb.crypto.price.historical
         )
         # Jarvis resolves crypto assets to a canonical base symbol (BTC, ETH)
         # while the yfinance OpenBB route expects an explicit quote pair.
         # Keep the canonical identity at the caller boundary and adapt only
         # the provider request symbol here.
-        providers = (provider,) if provider else (
-            self._provider_settings.price if asset_type == "equity" else self._provider_settings.crypto
-        )
+        providers = (provider,) if provider else {
+            "equity": self._provider_settings.price,
+            "etf": self._provider_settings.etf_price,
+            "crypto": self._provider_settings.crypto,
+        }[asset_type]
 
         def request(selected_provider: str) -> ResearchData:
             request_symbol = symbol
-            if asset_type == "crypto" and selected_provider == "yfinance" and "-" not in symbol:
-                request_symbol = f"{symbol.upper()}-USD"
+            if asset_type == "crypto" and selected_provider == "yfinance":
+                # Search providers may return an explicit compact USD pair
+                # (BTCUSD); normalize only its separator, preserving identity.
+                request_symbol = _yahoo_crypto_symbol(symbol)
             params: dict[str, Any] = {
                 "symbol": request_symbol,
                 "start_date": _date_value(start_date),
@@ -278,18 +306,126 @@ class OpenBBResearchClient:
             requested_provider=selected,
         ))
 
+    def get_fund_info(
+        self, symbol: str, *, provider: str | None = None
+    ) -> ResearchData:
+        """Return ETF info, supplementing dropped Yahoo fee fields locally."""
+        providers = (provider,) if provider else self._provider_settings.etf_info
+        raw = _first_available(providers, lambda selected: self._execute(
+            lambda: self._obb.etf.info(symbol=symbol, provider=selected),
+            symbol=symbol,
+            asset_type="etf",
+            category="etf_info",
+            requested_provider=selected,
+        ))
+        if raw.provider != "yfinance":
+            return raw
+        try:
+            supplement = self._fetch_yahoo_supplement(symbol, "etf")
+        except Exception as exc:
+            code = "timeout" if isinstance(exc, TimeoutError) else "provider_error"
+            return replace(
+                raw,
+                warnings=raw.warnings + ("Yahoo supplementary ETF data was unavailable.",),
+                attempts=raw.attempts + (ProviderAttempt("yfinance_supplement", "failure", code),),
+            )
+        rows = list(raw.data)
+        if rows:
+            rows[0] = _merge_non_null(rows[0], supplement)
+        else:
+            rows.append(supplement)
+        return replace(
+            raw,
+            data=tuple(rows),
+            attempts=raw.attempts + (ProviderAttempt("yfinance_supplement", "success"),),
+        )
+
+    def get_issuer_fund_data(self, symbol: str) -> ResearchData:
+        """Read explicitly supported public issuer metadata and full holdings."""
+        from .issuer_fund_data import fetch_issuer_fund_data
+
+        return fetch_issuer_fund_data(symbol)
+
+    def get_crypto_info(
+        self, symbol: str, *, provider: str | None = None
+    ) -> ResearchData:
+        """Return market-cap and supply fields actually exposed by Yahoo."""
+        if provider not in {None, "yfinance"}:
+            raise ResearchUnsupportedEndpointError(
+                "Crypto market information is not available from the selected provider.",
+                provider=provider,
+            )
+        try:
+            row = self._fetch_yahoo_supplement(symbol, "crypto")
+        except Exception as exc:
+            raise ResearchProviderError(
+                "Yahoo crypto market information could not be retrieved.",
+                provider="yfinance",
+            ) from exc
+        return ResearchData(
+            symbol=symbol,
+            asset_type="crypto",
+            category="crypto_info",
+            provider="yfinance",
+            retrieved_at=datetime.now(timezone.utc),
+            data=(row,),
+            attempts=(ProviderAttempt("yfinance_supplement", "success"),),
+            request_parameters=(("asset_type", "crypto"),),
+        )
+
+    @staticmethod
+    def _fetch_yahoo_supplement(symbol: str, asset_type: Literal["equity", "etf", "crypto"]) -> dict[str, Any]:
+        from openbb_core.provider.abstract.fetcher import run_async
+
+        from .yahoo_supplement import YahooSupplementFetcher
+
+        rows = run_async(
+            YahooSupplementFetcher.fetch_data,
+            params={
+                "symbol": _yahoo_crypto_symbol(symbol) if asset_type == "crypto" else symbol,
+                "asset_type": asset_type,
+            },
+            credentials=None,
+        )
+        if not rows:
+            raise ResearchNoDataError("Yahoo returned no supplementary metadata.", provider="yfinance")
+        return {**_row_to_dict(rows[0]), "symbol": symbol}
+
     def get_equity_quote(
         self, symbol: str, *, provider: str | None = None
     ) -> ResearchData:
         """Return a bounded observed equity quote."""
         providers = (provider,) if provider else self._provider_settings.quote
-        return _first_available(providers, lambda selected: self._execute(
+        raw = _first_available(providers, lambda selected: self._execute(
             lambda: self._obb.equity.price.quote(symbol=symbol, provider=selected),
             symbol=symbol,
             asset_type="equity",
             category="equity_quote",
             requested_provider=selected,
         ))
+        if raw.provider != "yfinance" or not raw.data or any(
+            row.get(field) is not None
+            for row in raw.data
+            for field in ("last_price", "price", "close")
+        ):
+            return raw
+        try:
+            supplement = self._fetch_yahoo_supplement(symbol, "equity")
+        except Exception as exc:
+            code = "timeout" if isinstance(exc, TimeoutError) else "provider_error"
+            return replace(
+                raw,
+                warnings=raw.warnings + ("Yahoo supplementary equity quote data was unavailable.",),
+                attempts=raw.attempts + (ProviderAttempt("yfinance_supplement", "failure", code),),
+            )
+
+        rows = list(raw.data)
+        rows[0] = _merge_non_null(rows[0], supplement)
+        return replace(
+            raw,
+            data=tuple(rows),
+            attempts=raw.attempts + (ProviderAttempt("yfinance_supplement", "success"),),
+        )
 
     def get_fundamental_metrics(
         self, symbol: str, *, provider: str | None = None

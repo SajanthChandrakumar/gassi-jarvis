@@ -716,7 +716,9 @@ def test_research_endpoints_use_real_dispatch_serialization_and_preserve_provena
     assert all(item["provider"] == "econdb" for item in macro.json()["failures"])
     assert run.status_code == 200
     payload = run.json()["research_payload"]
-    assert payload["status"] == "success"
+    # This fixture has prices but no company fundamentals; the report must
+    # preserve its evidence while explicitly indicating the missing essentials.
+    assert payload["status"] == "partial"
     assert payload["sources"][0]["provider"] == "offline-fixture"
     assert payload["sources"][0]["source_category"] == "price_history"
     assert payload["sources"][0]["retrieved_at"] == "2026-08-24T00:00:00+00:00"

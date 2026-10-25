@@ -14,7 +14,7 @@ from app.trading.research import (
     ResearchProviderSettings,
     ResearchRateLimitError,
 )
-from app.trading.research.normalizers import normalize_price_data
+from app.trading.research.normalizers import normalize_equity_quote, normalize_price_data
 from app.trading.research.openbb_client import _configure_tls_ca_bundle
 
 
@@ -52,6 +52,7 @@ def _fake_openbb(**endpoints):
             calendar=SimpleNamespace(earnings=endpoints.get("earnings")),
             estimates=SimpleNamespace(consensus=endpoints.get("estimates_consensus")),
         ),
+        etf=SimpleNamespace(info=endpoints.get("etf_info")),
         crypto=SimpleNamespace(price=SimpleNamespace(historical=endpoints.get("crypto_price"))),
         news=SimpleNamespace(company=endpoints.get("company_news")),
         economy=SimpleNamespace(indicators=endpoints.get("macro"), fred_series=endpoints.get("fred_series")),
@@ -89,6 +90,75 @@ def test_equity_price_history_preserves_provider_data_and_forwards_parameters():
     assert result.category == "price_history"
     assert result.data[0]["date"] == "2026-08-01"
     assert result.data[0]["volume"] == 42
+
+
+def test_etf_info_uses_free_yfinance_by_default_even_when_fmp_is_configured(monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "configured")
+    monkeypatch.setattr(
+        OpenBBResearchClient,
+        "_fetch_yahoo_supplement",
+        staticmethod(lambda symbol, asset_type: {
+            "currency": None, "net_expense_ratio_percent": "0.0945",
+        }),
+    )
+    providers = []
+
+    def info(**kwargs):
+        providers.append(kwargs["provider"])
+        return FakeResult([FakeRow(
+            symbol="SPY", name="SPDR S&P 500 ETF Trust", fund_family="SPDR",
+            total_assets=1000000, currency="USD", updated=date(2026, 10, 24),
+        )], provider=kwargs["provider"])
+
+    result = OpenBBResearchClient(
+        _fake_openbb(etf_info=info), ResearchProviderSettings.from_environment(),
+    ).get_fund_info("SPY")
+
+    assert providers == ["yfinance"]
+    assert result.provider == "yfinance"
+    assert result.category == "etf_info"
+    assert result.data[0]["total_assets"] == 1000000
+    assert result.data[0]["currency"] == "USD"
+    assert result.data[0]["net_expense_ratio_percent"] == "0.0945"
+
+
+def test_crypto_info_uses_observed_yahoo_fields_and_preserves_canonical_symbol(monkeypatch):
+    calls = []
+
+    def supplement(symbol, asset_type):
+        calls.append((symbol, asset_type))
+        return {
+            "currency": "USD", "market_cap": "1000", "circulating_supply": "20",
+            "total_supply": "21", "max_supply": "21",
+        }
+
+    monkeypatch.setattr(OpenBBResearchClient, "_fetch_yahoo_supplement", staticmethod(supplement))
+
+    result = _client().get_crypto_info("BTCUSD")
+
+    assert calls == [("BTCUSD", "crypto")]
+    assert result.symbol == "BTCUSD"
+    assert result.asset_type == "crypto"
+    assert result.data[0]["market_cap"] == "1000"
+    assert result.data[0]["currency"] == "USD"
+
+
+def test_etf_price_history_never_auto_falls_back_to_fmp(monkeypatch):
+    monkeypatch.setenv("FMP_API_KEY", "configured")
+    providers = []
+
+    def historical(**kwargs):
+        providers.append(kwargs["provider"])
+        if kwargs["provider"] == "yfinance":
+            return FakeResult([], provider="yfinance")
+        return FakeResult([FakeRow(date=date(2026, 8, 1), close=11)], provider="fmp")
+
+    with pytest.raises(ResearchNoDataError):
+        OpenBBResearchClient(
+            _fake_openbb(equity_price=historical), ResearchProviderSettings.from_environment(),
+        ).get_price_history("SPY", asset_type="etf")
+
+    assert providers == ["yfinance"]
 
 
 def test_equity_price_history_ignores_removed_credentials_and_uses_fmp_fallback(monkeypatch):
@@ -251,6 +321,82 @@ def test_quote_and_metrics_use_dedicated_routes():
     assert metric_args == {"symbol": "NVDA", "provider": "fmp"}
 
 
+def test_equity_quote_supplements_missing_last_price_and_preserves_existing_values(monkeypatch):
+    calls = []
+
+    def supplement(symbol, asset_type):
+        calls.append((symbol, asset_type))
+        return {
+            "last_price": "604.25",
+            "last_timestamp": "2026-10-24T14:00:00+00:00",
+            "prev_close": None,
+            "currency": None,
+            "year_high": None,
+        }
+
+    monkeypatch.setattr(OpenBBResearchClient, "_fetch_yahoo_supplement", staticmethod(supplement))
+
+    def quote(**kwargs):
+        return FakeResult([FakeRow(
+            symbol="SPY", last_price=None, prev_close=600.25,
+            last_timestamp="2026-10-24T13:00:00+00:00", currency="USD", year_high=610,
+        )], provider="yfinance")
+
+    result = _client(quote=quote).get_equity_quote("SPY", provider="yfinance")
+
+    assert calls == [("SPY", "equity")]
+    assert result.data[0]["last_price"] == "604.25"
+    assert result.data[0]["last_timestamp"] == "2026-10-24T14:00:00+00:00"
+    assert result.data[0]["prev_close"] == 600.25
+    assert result.data[0]["currency"] == "USD"
+    assert result.data[0]["year_high"] == 610
+    canonical = normalize_equity_quote(
+        result,
+        AssetIdentity("SPY", CanonicalAssetType.EQUITY, currency="USD"),
+    )
+    assert str(canonical.last_price) == "604.25"
+    assert canonical.as_of == datetime(2026, 10, 24, 14, tzinfo=timezone.utc)
+    assert [(attempt.provider, attempt.outcome, attempt.code) for attempt in result.attempts] == [
+        ("yfinance", "success", None),
+        ("yfinance_supplement", "success", None),
+    ]
+
+
+def test_equity_quote_skips_supplement_when_route_has_a_last_price(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        OpenBBResearchClient,
+        "_fetch_yahoo_supplement",
+        staticmethod(lambda *args: calls.append(args) or {}),
+    )
+
+    result = _client(quote=lambda **_: FakeResult([
+        FakeRow(symbol="NVDA", last_price=216.61, prev_close=214.40),
+    ], provider="yfinance")).get_equity_quote("NVDA", provider="yfinance")
+
+    assert calls == []
+    assert result.data[0]["last_price"] == 216.61
+
+
+def test_equity_quote_supplement_failure_keeps_openbb_data_and_records_failure(monkeypatch):
+    def fail(symbol, asset_type):
+        raise TimeoutError("yahoo timed out")
+
+    monkeypatch.setattr(OpenBBResearchClient, "_fetch_yahoo_supplement", staticmethod(fail))
+
+    result = _client(quote=lambda **_: FakeResult([
+        FakeRow(symbol="SPY", last_price=None, prev_close=600.25, currency="USD"),
+    ], provider="yfinance")).get_equity_quote("SPY", provider="yfinance")
+
+    assert result.data[0]["prev_close"] == 600.25
+    assert result.data[0]["currency"] == "USD"
+    assert result.warnings == ("Yahoo supplementary equity quote data was unavailable.",)
+    assert [(attempt.provider, attempt.outcome, attempt.code) for attempt in result.attempts] == [
+        ("yfinance", "success", None),
+        ("yfinance_supplement", "failure", "timeout"),
+    ]
+
+
 def test_company_news_falls_back_to_yfinance_when_configured_default_is_empty():
     providers = []
 
@@ -381,6 +527,19 @@ def test_canonical_crypto_symbols_use_yfinance_usd_pairs_without_changing_identi
 
     assert crypto_args["symbol"] == "BTC-USD"
     assert result.symbol == "BTC"
+
+
+def test_explicit_crypto_quote_suffix_maps_to_yahoo_syntax_without_changing_identity():
+    crypto_args = {}
+
+    def crypto(**kwargs):
+        crypto_args.update(kwargs)
+        return FakeResult([FakeRow(symbol="BTC-USD", close=100_000, volume=10)])
+
+    result = _client(crypto_price=crypto).get_price_history("BTCUSD", asset_type="crypto", provider="yfinance")
+
+    assert crypto_args["symbol"] == "BTC-USD"
+    assert result.symbol == "BTCUSD"
 
 
 def test_empty_upstream_result_is_not_silently_converted_to_an_empty_list():

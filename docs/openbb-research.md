@@ -13,8 +13,10 @@ and the ordered provider attempts made for that endpoint.
 
 | Method | OpenBB route | Default provider | Data |
 |---|---|---|---|
-| `get_price_history(..., asset_type="equity")` | `equity.price.historical` | `yfinance`, then configured FMP | Equity/ETF OHLCV |
+| `get_price_history(..., asset_type="equity")` | `equity.price.historical` | `yfinance`, then configured FMP | Equity OHLCV |
+| `get_price_history(..., asset_type="etf")` | `equity.price.historical` | `yfinance` | ETF OHLCV; no paid-provider fallback is activated |
 | `get_price_history(..., asset_type="crypto")` | `crypto.price.historical` | `yfinance` | Crypto-pair OHLCV and volume |
+| `get_fund_info` | `etf.info` | `yfinance` | Provider-returned ETF description, listing currency/exchange, NAV, total assets, and dividend fields |
 | `get_equity_quote` | `equity.price.quote` | `yfinance`, then configured FMP | Current quote snapshot |
 | `get_company_profile` | `equity.profile` | configured FMP, then `yfinance` | Raw company/ETF profile fields |
 | `get_financial_statements` | `equity.fundamental.{income,balance,cash}` | SEC, configured FMP, then `yfinance` | Raw financial statements |
@@ -32,6 +34,20 @@ crypto-specific canonical section only; historical and relationship workflows
 continue to request their price series directly. This prevents provider-specific
 pair syntax and equity-only sections from leaking into the research models or
 breaking crypto/benchmark analysis.
+
+Explicit Yahoo-style compact crypto pair symbols such as `BTCUSD` are adapted
+to `BTC-USD` for price requests while the selected canonical symbol remains
+`BTCUSD`. ETF metadata uses only the installed Yahoo route by default. Fields
+not returned by that route are not inferred. Small local typed OpenBB Fetchers
+expose existing Yahoo-library capabilities for expense ratio, top holdings,
+sectors and crypto market cap/supply. They do not mutate OpenBB's provider
+registry or add dependencies. Missing geography, full portfolio, observation
+dates and fund asset-value currency remain explicit. Yahoo supplementary calls
+have bounded request timeouts; failures preserve independently available data.
+
+The table above describes configurable low-level adapter defaults. The German
+terminal deliberately constructs free Yahoo/SEC market-data settings, even if
+an FMP key exists. Its existing separate macro configuration is preserved.
 
 Jarvis uses OpenBB 4 through its supported `from openbb import obb` interface.
 The core package provides this interface; the required routers and provider

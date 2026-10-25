@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 import re
 
-from .openbb_client import OpenBBResearchClient
+from .openbb_client import OpenBBResearchClient, ResearchProviderSettings
 from .openbb_client import ResearchError
 from .orchestration import (
     ResearchAnalysisType,
@@ -120,7 +120,13 @@ def macro_context_payload(
 
 def create_default_orchestrator() -> ResearchOrchestrator:
     """Construct only read-only provider access; OpenBB remains lazy until a request."""
-    return ResearchOrchestrator(CanonicalResearchService(OpenBBResearchClient()))
+    # The terminal's approved default is free market-data sources. An existing
+    # FMP key must not silently switch its reports to keyed provider routes.
+    settings = ResearchProviderSettings(
+        statements=("sec", "yfinance"),
+        macro=ResearchProviderSettings.from_environment().macro,
+    )
+    return ResearchOrchestrator(CanonicalResearchService(OpenBBResearchClient(provider_settings=settings)))
 
 
 class JarvisResearchTools:
@@ -129,22 +135,95 @@ class JarvisResearchTools:
     def __init__(self, orchestrator: ResearchOrchestrator | None = None) -> None:
         self.orchestrator = orchestrator or create_default_orchestrator()
 
-    def research_asset(self, *, asset: str, timeframe: str | None = None, report_depth: str = "standard") -> ResearchResponse:
+    def research_asset(
+        self,
+        *,
+        asset: str,
+        timeframe: str | None = None,
+        report_depth: str = "standard",
+        asset_type: str | None = None,
+        exchange: str | None = None,
+        currency: str | None = None,
+        refresh: bool = False,
+    ) -> ResearchResponse:
         from .reports import ReportDepth
-        return self.orchestrator.execute(ResearchRequest(ResearchIntent.ASSET_ANALYSIS, (asset,), timeframe=timeframe, report_depth=ReportDepth(report_depth)))
+        return self.orchestrator.execute(ResearchRequest(
+            ResearchIntent.ASSET_ANALYSIS, (asset,), timeframe=timeframe,
+            report_depth=ReportDepth(report_depth), asset_type=asset_type,
+            exchange=exchange, currency=currency, refresh=refresh,
+        ))
 
-    def compare_assets(self, *, left_asset: str, right_asset: str, timeframe: str | None = None, report_depth: str = "standard") -> ResearchResponse:
+    def compare_assets(
+        self,
+        *,
+        left_asset: str,
+        right_asset: str,
+        timeframe: str | None = None,
+        report_depth: str = "standard",
+        asset_type: str | None = None,
+        exchange: str | None = None,
+        currency: str | None = None,
+        benchmark_asset_type: str | None = None,
+        benchmark_exchange: str | None = None,
+        benchmark_currency: str | None = None,
+        refresh: bool = False,
+    ) -> ResearchResponse:
         from .reports import ReportDepth
-        return self.orchestrator.execute(ResearchRequest(ResearchIntent.ASSET_COMPARISON, (left_asset, right_asset), timeframe=timeframe, report_depth=ReportDepth(report_depth)))
+        return self.orchestrator.execute(ResearchRequest(
+            ResearchIntent.ASSET_COMPARISON, (left_asset, right_asset),
+            timeframe=timeframe, report_depth=ReportDepth(report_depth),
+            asset_type=asset_type, exchange=exchange, currency=currency,
+            benchmark_asset_type=benchmark_asset_type,
+            benchmark_exchange=benchmark_exchange,
+            benchmark_currency=benchmark_currency, refresh=refresh,
+        ))
 
-    def research_history(self, *, asset: str, timeframe: str | None = "historisch", lookback: int = 20, volatility_percentile: str = "0.90") -> ResearchResponse:
-        return self.orchestrator.execute(ResearchRequest(ResearchIntent.HISTORICAL_ANALYSIS, (asset,), timeframe=timeframe, analyses=(ResearchAnalysisType.EVENT_STUDY,), parameters=(("lookback", str(lookback)), ("volatility_percentile", volatility_percentile))))
+    def research_history(
+        self,
+        *,
+        asset: str,
+        timeframe: str | None = "historisch",
+        lookback: int = 20,
+        volatility_percentile: str = "0.90",
+        asset_type: str | None = None,
+        exchange: str | None = None,
+        currency: str | None = None,
+        refresh: bool = False,
+    ) -> ResearchResponse:
+        return self.orchestrator.execute(ResearchRequest(
+            ResearchIntent.HISTORICAL_ANALYSIS, (asset,), timeframe=timeframe,
+            analyses=(ResearchAnalysisType.EVENT_STUDY,),
+            parameters=(("lookback", str(lookback)), ("volatility_percentile", volatility_percentile)),
+            asset_type=asset_type, exchange=exchange, currency=currency,
+            refresh=refresh,
+        ))
 
-    def analyze_relationship(self, *, asset: str, benchmark: str, timeframe: str | None = None, analysis: str = "correlation") -> ResearchResponse:
+    def analyze_relationship(
+        self,
+        *,
+        asset: str,
+        benchmark: str,
+        timeframe: str | None = None,
+        analysis: str = "correlation",
+        asset_type: str | None = None,
+        exchange: str | None = None,
+        currency: str | None = None,
+        benchmark_asset_type: str | None = None,
+        benchmark_exchange: str | None = None,
+        benchmark_currency: str | None = None,
+        refresh: bool = False,
+    ) -> ResearchResponse:
         analysis_type = ResearchAnalysisType(analysis)
         if analysis_type not in {ResearchAnalysisType.CORRELATION, ResearchAnalysisType.BETA}:
             raise ValueError("relationship analysis must be correlation or beta")
-        return self.orchestrator.execute(ResearchRequest(ResearchIntent.STATISTICAL_RELATIONSHIP, (asset,), benchmark=benchmark, timeframe=timeframe, analyses=(analysis_type,)))
+        return self.orchestrator.execute(ResearchRequest(
+            ResearchIntent.STATISTICAL_RELATIONSHIP, (asset,), benchmark=benchmark,
+            timeframe=timeframe, analyses=(analysis_type,),
+            asset_type=asset_type, exchange=exchange, currency=currency,
+            benchmark_asset_type=benchmark_asset_type,
+            benchmark_exchange=benchmark_exchange,
+            benchmark_currency=benchmark_currency, refresh=refresh,
+        ))
 
     def dispatch(self, name: str, arguments: dict) -> ResearchResponse:
         method = getattr(self, name, None)

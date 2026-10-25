@@ -28,8 +28,8 @@ def _js() -> str:
 def test_command_center_loads_separate_native_assets() -> None:
     ui = _ui()
 
-    assert '<link rel="stylesheet" href="/static/styles.css?v=9">' in ui
-    assert '<script src="/static/app.js?v=9" defer></script>' in ui
+    assert '<link rel="stylesheet" href="/static/styles.css?v=12">' in ui
+    assert '<script src="/static/app.js?v=12" defer></script>' in ui
     assert "<style>" not in ui
     assert "<script>" not in ui
     assert CSS_PATH.is_file()
@@ -39,20 +39,19 @@ def test_command_center_loads_separate_native_assets() -> None:
 def test_editorial_shell_prioritizes_research_command_and_useful_empty_state() -> None:
     ui = _ui()
 
-    assert "<h1" in ui and "Research an asset" in ui
-    for identifier in ("researchForm", "researchInput", "modeTabs", "workspace", "recentResearch", "watchlistState"):
+    assert '<html lang="de">' in ui and "Was möchtest du untersuchen?" in ui
+    for identifier in ("researchForm", "researchInput", "searchResults", "workspace", "researchFeed"):
         assert f'id="{identifier}"' in ui
     assert ui.index('id="researchForm"') < ui.index('id="workspace"')
 
 
-def test_command_center_links_world_cup_predictor_safely() -> None:
+def test_static_external_links_require_safe_new_tab_attributes() -> None:
     html = UI_PATH.read_text(encoding="utf-8")
 
-    assert "WM 2026 Predictor" in html
-    assert (
-        '<a class="external-tool-link" href="https://wc2026-predictor-8skd.onrender.com/" '
-        'target="_blank" rel="noopener noreferrer">'
-    ) in html
+    import re
+
+    for link in re.findall(r"<a\b[^>]*target=\"_blank\"[^>]*>", html):
+        assert 'rel="noopener noreferrer"' in link
 
 
 def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
@@ -67,7 +66,7 @@ def test_editorial_shell_removes_hud_and_decorative_patterns() -> None:
 
 def test_service_worker_versions_every_command_center_asset() -> None:
     worker = (STATIC / "sw.js").read_text(encoding="utf-8")
-    for path in ("/", "/static/styles.css?v=9", "/static/app.js?v=9"):
+    for path in ("/", "/static/styles.css?v=12", "/static/app.js?v=12"):
         assert repr(path) in worker or f'"{path}"' in worker
 
 
@@ -139,7 +138,7 @@ def test_asset_renderer_has_document_sections_and_compact_formatters() -> None:
 
     for name in ("renderAssetReport", "renderAssetHeader", "renderPriceHistory", "renderMetricSections", "renderComparisonReport", "renderHistoricalReport", "renderRelationshipReport", "formatMoney", "formatCompact", "formatRatio", "formatPercent"):
         assert f"function {name}" in js
-    for heading in ("Market snapshot", "Price history", "Fundamentals", "Valuation"):
+    for heading in ("Marktüberblick", "Kursverlauf", "Fundamentaldaten", "Bewertung"):
         assert heading in js
 
 
@@ -148,7 +147,7 @@ def test_report_renderer_exposes_filings_news_and_section_context() -> None:
 
     for name in ("renderEarnings", "renderFilings", "renderDirectNews", "renderMacroContext", "renderProviderConfiguration", "renderContextPanel", "renderSectionNotice"):
         assert f"function {name}" in js
-    for heading in ("Recent filings", "Company news", "Sources", "Coverage"):
+    for heading in ("Unternehmensmeldungen", "Unternehmensnachrichten", "Quellen", "Datenabdeckung"):
         assert heading in js
     assert "report.earnings" in js
     assert "item.unit" in js
@@ -158,7 +157,7 @@ def test_stock_report_preserves_currency_null_and_safe_link_states() -> None:
     js = _js()
 
     assert "function safeHttpUrl" in js
-    assert "Currency unknown" in js
+    assert "Währung unbekannt" in js
     assert "function formatMoney(value, currency)" in js
     assert "value === null || value === undefined || value === ''" in js
     assert "['http:', 'https:'].includes(url.protocol)" in js
@@ -172,9 +171,9 @@ def test_stock_report_chart_has_date_axes_accessible_selection_and_exact_data() 
     assert "role: 'group'" in js
     assert "aria-live" in js
     assert "ArrowLeft" in js and "ArrowRight" in js
-    assert "Exact closing-price data" in js
-    assert "Insufficient closing-price observations" in js
-    assert "Downsampled" in js
+    assert "Exakte Schlusskurse" in js
+    assert "Zu wenige datierte Schlusskurse" in js
+    assert "Für die Anzeige reduziert" in js
 
 
 def test_stock_report_renders_ordered_findings_risk_links_and_coverage() -> None:
@@ -188,7 +187,7 @@ def test_stock_report_renders_ordered_findings_risk_links_and_coverage() -> None
     assert "comparison_period" in js
     assert "retrieved_at" in js
     assert "missing_fields" in js
-    assert "failure.message" in js
+    assert "appendOriginalSourceText(notice, failure.message)" in js
 
 
 def test_stock_report_limits_sources_and_pairs_eps_from_one_historical_observation() -> None:
@@ -197,8 +196,8 @@ def test_stock_report_limits_sources_and_pairs_eps_from_one_historical_observati
     assert "function renderEpsComparison" in js
     assert "reported_eps" in js and "estimated_eps" in js
     assert "period_end" in js and "earnings_date" in js
-    assert "Reported actual" in js and "Provider estimate" in js
-    assert "No matched historical actual/estimate observations" in js
+    assert "Gemeldeter Istwert" in js and "Schätzung der Quelle" in js
+    assert "Keine passenden historischen Ist- und Schätzwerte verfügbar." in js
     assert "slice(0, 3)" in js and "slice(0, 5)" in js
     assert "function safeHttpUrl" in js
 
@@ -220,7 +219,7 @@ def test_ui_never_renders_raw_provider_plan_errors() -> None:
         assert stale not in js
     assert "function safeProviderText" in js
     assert "textContent = safeProviderText(text)" in js
-    assert "safeProviderText(failure.message)" in js
+    assert "appendOriginalSourceText(notice, failure.message)" in js
 
 
 def test_command_center_has_command_first_prompt_and_research_modes() -> None:
@@ -229,7 +228,7 @@ def test_command_center_has_command_first_prompt_and_research_modes() -> None:
     assert 'id="jarvisCore"' in ui
     assert 'id="researchForm"' in ui
     assert 'id="researchInput"' in ui
-    for label in ("Research an asset", "Asset", "Compare", "Relationship", "History", "How to read results"):
+    for label in ("Was möchtest du untersuchen?", "Aktie", "ETF", "Krypto", "Bericht erstellen", "Systemstatus und Mac-Status"):
         assert label in ui
 
 
@@ -250,20 +249,20 @@ def test_research_requests_preserve_existing_chat_flow() -> None:
     assert "session_id: sessionId" in ui
     assert "finance_research:" in ui
     assert "hitl_pending" in ui
-    assert "Research result" in ui
+    assert "apiFetch('/api/research/run'" in ui
     assert "quality-warning" in ui
     assert "loadingResearch" in ui
     assert "answer-query" in ui
     assert "research_payload" in ui
-    assert "appendStructuredResearch" in ui
-    assert "Structured evidence" in ui
-    assert "finding-grid" in ui
+    assert "renderResearchPayload" in ui
+    assert "Kernbefunde" in ui
+    assert "findings-list" in ui
     assert "PRESENTATION_LABELS" in ui
     assert "readableTimestamp" in ui
     assert "updateResearchAlerts" in ui
     assert 'id="alertsState"' in ui
-    assert "Canonical research" in ui
-    assert "Recent research" in ui
+    assert "Quellen und Datenabdeckung" in ui
+    assert "Zuletzt abgerufen" in ui
 
 
 def test_accessibility_and_responsive_motion_contracts_are_present() -> None:
@@ -288,19 +287,19 @@ def test_command_center_uses_opaque_solid_surfaces_not_glass_panels() -> None:
 def test_provider_status_is_explicit_and_does_not_expose_credentials() -> None:
     ui = _ui()
 
-    assert "Data coverage" in ui
+    assert "Datenabdeckung" in ui
     assert "loadProviderStatus" in ui
     assert "apiFetch('/api/research/providers'" in ui
-    assert "Credential values are never displayed." in ui
+    assert "Zugangsdaten werden nie angezeigt." in ui
     assert "configuration_state" in ui
-    assert "Connection error. Please check that the Jarvis server is available." in ui
+    assert "Der Quellenstatus ist verfügbar, wenn Jarvis lokal läuft." in ui
 
 
 def test_structured_reports_render_provider_backed_company_news() -> None:
     ui = _ui()
 
     assert "report.news" in ui
-    assert "Latest company news" in ui
+    assert "Unternehmensnachrichten" in ui
     assert "news-list" in ui
     assert "article.url" in ui
 
@@ -316,9 +315,9 @@ def test_command_center_loads_canonical_macro_context() -> None:
     assert "macro-countries" in ui
     assert "macro-country" in ui
     assert "country.label" in ui
-    assert "10-year government yield" in ui
-    assert "Real GDP growth" in ui
-    assert "Macro context" in ui
+    assert "Zehnjahresrendite" in ui
+    assert "Reales BIP-Wachstum" in ui
+    assert "Makrodaten" in ui
 
 
 def test_structured_reports_render_observed_report_metrics() -> None:
@@ -327,7 +326,7 @@ def test_structured_reports_render_observed_report_metrics() -> None:
     assert "report.sections" in ui
     assert "appendReportMetrics" in ui
     assert "metric-grid" in ui
-    assert "Analyst consensus" in ui
+    assert "Analystenschätzungen" in ui
 
 
 def test_navigation_opens_validated_research_workflows_and_charts() -> None:
@@ -355,15 +354,12 @@ def test_local_watchlist_saved_research_and_exports_are_available() -> None:
     assert "saveResearchResult" in ui
     assert "renderSavedResearch" in ui
     assert "exportResearch" in ui
-    assert "Export JSON" in ui
-    assert "Export CSV" in ui
-    assert "Add to watchlist" in ui
+    assert "JSON exportieren" in ui
+    assert "CSV exportieren" in ui
     assert "setTimeout(() => URL.revokeObjectURL(url), 1000)" in ui
-    assert "format.toUpperCase() + ' export prepared.'" in ui
+    assert "format.toUpperCase() + '-Export vorbereitet.'" in ui
     assert "'statistical_result'" in ui
     assert "'historical_result'" in ui
-    assert "appendResultActions(article, researchPayload)" in ui
-    assert "saveResearchResult(query, normalizedAction, text, researchPayload)" in ui
-    assert "document.getElementById('watchlistForm').addEventListener" in ui
-    assert "document.querySelectorAll('[data-scroll-target]')" in ui
+    assert "appendResultActions(article, researchPayload, reportSelection, requestPayload)" in ui
+    assert "Daten aktualisieren" in ui
     assert "renderWatchlist(); renderSavedResearch();" in ui

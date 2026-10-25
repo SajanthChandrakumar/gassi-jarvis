@@ -97,6 +97,23 @@ The broader financial state contract is
 Portfolio, trading execution, recommendations, and portfolio APIs remain
 future/out of scope.
 
+### German instrument-first terminal
+
+The primary interface selects equity, ETF or crypto, resolves a provider-observed
+listing, then calls the authenticated deterministic research endpoint directly.
+Optional instrument identity and refresh fields preserve older ticker requests.
+Small local OpenBB Fetchers expose Yahoo library capabilities absent from the
+installed provider routes: instrument search, ETF fees/top holdings/sectors and
+crypto market data. They introduce no new package or provider-registry mutation.
+For SPY a fixed local OpenBB issuer Fetcher additionally validates State Street
+identity and retains dated official metadata, all published holdings and sector
+weights. Yahoo-only fund observations remain separately attributed. Price
+observation time stays separate from newer metadata observation dates.
+Market-data defaults are explicitly free sources; existing keyed macro settings
+remain separate. Reports preserve unknown currencies, periods and portfolio
+observation dates, with visible partial coverage. See
+[`docs/mini-research-terminal.md`](docs/mini-research-terminal.md) for usage and limits.
+
 ### Country-grouped macro context
 
 `GET /api/research/macro` requests five bounded indicators for Switzerland and

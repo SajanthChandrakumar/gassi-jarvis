@@ -16,6 +16,7 @@ from app.trading.research.canonical import (
     EarningsData,
     EarningsObservation,
     EstimatesData,
+    FundProfile,
     EquityQuote,
     FreshnessStatus,
     NewsArticle,
@@ -39,6 +40,18 @@ def _build(data, depth=ReportDepth.STANDARD):
     return AssetResearchReportService().build_asset_report(research_data=data, analysis=analysis, depth=depth)
 
 
+def test_newer_metadata_does_not_relabel_the_price_observation_time():
+    from app.trading.research.canonical import CompanyProfile
+    data = equity_growth_case()
+    data = replace(data, profile=CompanyProfile(
+        data.asset, data.prices.provenance, NOW + timedelta(days=1),
+        FreshnessStatus.FRESH, DataQuality(QualityStatus.COMPLETE),
+    ))
+    report = _build(data)
+    assert report.as_of == NOW + timedelta(days=1)
+    assert report.price_as_of == data.prices.bars[-1].timestamp
+
+
 def test_full_equity_report_uses_stable_equity_template_and_preserves_evidence():
     data = equity_growth_case()
     valuation = ValuationData(data.asset, (("pe_ratio", Decimal("41.8")),), data.prices.provenance, NOW, FreshnessStatus.FRESH, DataQuality(QualityStatus.COMPLETE))
@@ -46,6 +59,12 @@ def test_full_equity_report_uses_stable_equity_template_and_preserves_evidence()
 
     assert [section.key for section in report.sections] == ["snapshot", "key_findings", "fundamentals", "growth", "profitability", "cash_flow", "valuation", "market_behavior", "risks", "data_quality", "sources"]
     assert report.summary.data_confidence is ReportDataConfidence.HIGH
+    assert report.financial_history == data.fundamentals.statements
+    reported_revenue = next(
+        metric for section in report.sections if section.key == "fundamentals"
+        for metric in section.metrics if metric.key == "revenue"
+    )
+    assert reported_revenue.unit == "unknown"
     assert any(metric.key == "pe_ratio" and metric.value == Decimal("41.8") for section in report.sections if section.key == "valuation" for metric in section.metrics)
     assert all(finding.provenance for finding in report.key_findings)
     assert all(finding.id for finding in report.key_findings)
@@ -73,6 +92,36 @@ def test_partial_and_stale_data_are_explicit_caveats_with_lower_confidence():
     assert any(item.section == "prices" and "partial" in " ".join(item.warnings) for item in partial.data_coverage)
     assert any(item.section == "fundamentals" and "stale" in " ".join(item.warnings) for item in stale.data_coverage)
     assert any(risk.category == FindingCategory.DATA_QUALITY.value for risk in partial.risks)
+    assert partial.is_partial and stale.is_partial
+
+
+def test_report_is_partial_when_requested_optional_data_has_an_upstream_failure():
+    data = equity_growth_case()
+    report = _build(replace(
+        data,
+        failures=(SectionFailure("news", "provider_error", "provider unavailable"),),
+    ))
+
+    assert report.is_partial
+    assert report.missing_essentials == ()
+    assert report.data_quality.status is QualityStatus.PARTIAL
+
+
+def test_fundamental_report_metrics_use_only_source_reported_currency():
+    data = equity_growth_case()
+    statements = tuple(
+        replace(statement, currency="EUR" if statement.statement_type == "income" else None)
+        for statement in data.fundamentals.statements
+    )
+    report = _build(replace(data, fundamentals=replace(data.fundamentals, statements=statements)))
+    metrics = {
+        metric.key: metric.unit
+        for section in report.sections if section.key == "fundamentals"
+        for metric in section.metrics
+    }
+
+    assert metrics["revenue"] == "EUR"
+    assert metrics["operating_cash_flow"] == "unknown"
 
 
 def test_estimate_unsupported_missing_and_not_requested_remain_distinct():
@@ -305,7 +354,32 @@ def test_crypto_report_does_not_fabricate_derivatives_and_uses_crypto_sections_o
     assert "growth" not in keys and "balance_sheet" not in keys
     derivatives = next(item for item in report.data_coverage if item.section == "derivatives_metadata")
     assert derivatives.availability is Availability.NOT_SUPPORTED
+    assert report.is_partial
+    assert {"crypto_market_cap", "crypto_circulating_supply", "crypto_total_supply"}.issubset(report.missing_essentials)
+    assert all(next(item for item in report.data_coverage if item.section == section).availability is Availability.MISSING
+               for section in ("crypto_market_cap", "crypto_circulating_supply", "crypto_total_supply"))
     assert not any("derivatives" in metric.key for section in report.sections for metric in section.metrics)
+
+
+def test_crypto_market_structure_keeps_observed_currency_and_supply_units_explicit():
+    source = crypto_price_volume_case()
+    crypto = replace(
+        source.crypto,
+        market_cap=Decimal("1234"),
+        circulating_supply=Decimal("10"),
+        total_supply=Decimal("12"),
+        max_supply=Decimal("20"),
+        market_cap_currency=None,
+    )
+    report = _build(replace(source, crypto=crypto))
+    section = next(item for item in report.sections if item.key == "market_structure")
+    metrics = {item.key: item for item in section.metrics}
+
+    assert metrics["crypto_market_cap"].value == Decimal("1234")
+    assert metrics["crypto_market_cap"].unit == "unknown"
+    assert metrics["crypto_circulating_supply"].unit == "asset units"
+    assert metrics["crypto_max_supply"].value == Decimal("20")
+    assert next(item for item in report.data_coverage if item.section == "crypto_max_supply").availability is Availability.AVAILABLE
 
 
 def test_etf_report_uses_basic_etf_template_without_holdings_decomposition():
@@ -317,7 +391,75 @@ def test_etf_report_uses_basic_etf_template_without_holdings_decomposition():
 
     assert "market_behavior" in keys
     assert "growth" not in keys and "fund_market_characteristics" not in keys
+    assert report.is_partial
+    assert {"fund_info", "fund_fee", "fund_holdings"}.issubset(report.missing_essentials)
+    assert next(item for item in report.data_coverage if item.section == "fund_holdings").availability is Availability.MISSING
     assert all("holding" not in metric.key for section in report.sections for metric in section.metrics)
+
+
+def test_etf_report_adds_sourced_fund_characteristics_and_explicit_partial_coverage():
+    source = equity_growth_case()
+    asset = AssetIdentity("SPY", CanonicalAssetType.ETF, currency="USD")
+    fund = FundProfile(
+        asset=asset, name="SPDR S&P 500 ETF Trust", issuer=None,
+        fund_family="SPDR", objective="Tracks the S&P 500 Index", benchmark=None,
+        expense_ratio=None, assets_under_management=Decimal("600000000000"),
+        nav=Decimal("590"), distribution_frequency=None,
+        dividend_yield=Decimal("1.2"), dividend_yield_ttm=None,
+        dividend_rate_ttm=None, replication_method=None, currency="USD",
+        exchange="NYSE Arca", inception_date=None, as_of=None,
+        provenance=ResearchProvenance("yfinance", "etf_info", NOW),
+        freshness=FreshnessStatus.FRESH,
+        quality=DataQuality(QualityStatus.PARTIAL, missing_fields=("expense_ratio", "benchmark")),
+        website="https://issuer.example/funds/spy",
+    )
+    data = AssetResearchData(
+        asset, prices=replace(source.prices, asset=asset), fund_profile=fund,
+        quality=DataQuality(QualityStatus.PARTIAL),
+    )
+
+    report = _build(data)
+
+    section = next(item for item in report.sections if item.key == "fund_characteristics")
+    aum_metric = next(item for item in section.metrics if item.key == "assets_under_management")
+    assert aum_metric.value == Decimal("600000000000")
+    assert aum_metric.unit is None
+    assert dict(section.details)["objective"] == "Tracks the S&P 500 Index"
+    assert dict(section.details)["website"] == "https://issuer.example/funds/spy"
+    assert dict(section.details)["assets_under_management_basis"] == "Provider-reported total assets; currency not separately supplied"
+    assert section.provenance[0].provider == "yfinance"
+    assert report.is_partial and "fund_fee" in report.missing_essentials
+    assert next(item for item in report.data_coverage if item.section == "fund_distribution").availability is Availability.NOT_SUPPORTED
+    assert next(item for item in report.data_coverage if item.section == "fund_fee").reference_url == fund.website
+    assert next(item for item in report.data_coverage if item.section == "fund_info").reference_url == fund.website
+
+
+def test_etf_fee_report_uses_percentage_points_and_dividend_rate_unknown_currency():
+    source = equity_growth_case()
+    asset = AssetIdentity("SPY", CanonicalAssetType.ETF)
+    fund = FundProfile(
+        asset=asset, name="Example ETF", issuer=None, fund_family=None,
+        objective=None, benchmark=None, expense_ratio=Decimal("0.000945"),
+        assets_under_management=None, nav=None, distribution_frequency=None,
+        dividend_yield=None, dividend_yield_ttm=None, dividend_rate_ttm=Decimal("6.25"),
+        replication_method=None, currency=None, exchange=None, inception_date=None,
+        as_of=None, provenance=ResearchProvenance("yfinance", "etf_info", NOW),
+        freshness=FreshnessStatus.FRESH, quality=DataQuality(QualityStatus.PARTIAL),
+    )
+
+    report = _build(AssetResearchData(
+        asset, prices=replace(source.prices, asset=asset), fund_profile=fund,
+        quality=DataQuality(QualityStatus.PARTIAL),
+    ))
+    metrics = {
+        metric.key: metric
+        for section in report.sections if section.key == "fund_characteristics"
+        for metric in section.metrics
+    }
+
+    assert metrics["expense_ratio"].value == Decimal("0.094500")
+    assert metrics["expense_ratio"].unit == "%"
+    assert metrics["dividend_rate_ttm"].unit == "unknown"
 
 
 def test_positive_negative_and_mixed_factors_are_finding_backed():

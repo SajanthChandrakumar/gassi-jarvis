@@ -21,6 +21,7 @@ from .canonical import (
     DataQuality,
     EarningsData,
     EarningsObservation,
+    FundProfile,
     EquityQuote,
     EstimatesData,
     FinancialStatement,
@@ -122,6 +123,7 @@ def identity_from_profile(
     raw: ResearchData,
     *,
     fallback_type: CanonicalAssetType = CanonicalAssetType.EQUITY,
+    fallback: AssetIdentity | None = None,
 ) -> AssetIdentity:
     row = raw.data[0] if raw.data else {}
     asset_type = str(row.get("asset_type") or row.get("issue_type") or fallback_type.value).lower()
@@ -134,11 +136,125 @@ def identity_from_profile(
     return AssetIdentity(
         symbol=str(row.get("symbol") or raw.symbol),
         asset_type=type_mapping.get(asset_type, fallback_type),
-        name=row.get("name") or row.get("long_name"),
-        exchange=row.get("exchange") or row.get("stock_exchange"),
-        currency=row.get("currency"),
-        country=row.get("country") or row.get("hq_country"),
-        provider_identifiers=tuple((key, str(row[key])) for key in ("cik", "isin", "cusip", "lei") if row.get(key)),
+        name=row.get("name") or row.get("long_name") or (fallback.name if fallback else None),
+        exchange=row.get("exchange") or row.get("stock_exchange") or (fallback.exchange if fallback else None),
+        currency=row.get("currency") or (fallback.currency if fallback else None),
+        country=row.get("country") or row.get("hq_country") or (fallback.country if fallback else None),
+        provider_identifiers=(fallback.provider_identifiers if fallback else ()) + tuple(
+            (key, str(row[key])) for key in ("cik", "isin", "cusip", "lei") if row.get(key)
+        ),
+    )
+
+
+def identity_from_fund_info(raw: ResearchData, fallback: AssetIdentity) -> AssetIdentity:
+    """Enrich a resolved ETF identity only with fields actually returned."""
+    row = raw.data[0] if raw.data else {}
+    return AssetIdentity(
+        symbol=str(row.get("symbol") or fallback.symbol),
+        asset_type=CanonicalAssetType.ETF,
+        name=row.get("name") or fallback.name,
+        exchange=row.get("exchange") or row.get("stock_exchange") or fallback.exchange,
+        currency=row.get("currency") or fallback.currency,
+        country=row.get("domicile") or fallback.country,
+        provider_identifiers=fallback.provider_identifiers + tuple(
+            (key, str(row[key])) for key in ("isin", "cusip") if row.get(key)
+        ),
+    )
+
+
+def normalize_fund_profile(
+    raw: ResearchData,
+    asset: AssetIdentity,
+    *,
+    policy: FreshnessPolicy | None = None,
+    now: datetime | None = None,
+) -> FundProfile:
+    if raw.category not in {"etf_info", "issuer_fund_data"}:
+        raise NormalizationError(f"Expected etf_info data, got {raw.category}")
+    row = raw.data[0] if raw.data else {}
+    text = lambda *keys: (str(value).strip() if (value := _first_value(row, keys)) else None)
+    # Yahoo's ETF info exposes total_assets as an absolute amount. FMP's aum
+    # and Intrinio's month_end_assets use provider-specific units, so they are
+    # left unnormalized until those routes are deliberately supported.
+    expense_ratio = _decimal(row.get("expense_ratio"), "expense_ratio")
+    net_expense_ratio_percent = _decimal(row.get("net_expense_ratio_percent"), "net_expense_ratio_percent")
+    if net_expense_ratio_percent is not None:
+        # The local Yahoo supplement exposes netExpenseRatio in percentage
+        # points (for example 0.0945 means 0.0945%). Canonical rates are ratios.
+        expense_ratio = net_expense_ratio_percent / Decimal("100")
+    aum = _decimal(_first_value(row, ("assets_under_management", "total_assets")), "assets_under_management")
+    nav = _decimal(_first_value(row, ("nav", "nav_price")), "nav")
+    dividend_yield = _decimal(row.get("dividend_yield"), "dividend_yield")
+    dividend_yield_ttm = _decimal(row.get("dividend_yield_ttm"), "dividend_yield_ttm")
+    dividend_rate_ttm = _decimal(row.get("dividend_rate_ttm"), "dividend_rate_ttm")
+    values = {
+        "issuer": text("issuer"),
+        "objective": text("objective"),
+        "benchmark": text("benchmark", "index_name", "benchmark_name"),
+        "expense_ratio": expense_ratio,
+        "assets_under_management": aum,
+        "distribution_frequency": text("distribution_frequency", "dividend_frequency"),
+        "replication_method": text("replication_method"),
+    }
+    missing = tuple(key for key, value in values.items() if value is None)
+    freshness = (policy or FreshnessPolicy()).status_for(raw.category, raw.retrieved_at, now=now)
+    updated = _first_value(row, ("updated", "as_of", "date"))
+    inception = _first_value(row, ("inception_date", "fund_listing_date"))
+    website_value = text("website", "webpage")
+    website = None
+    if website_value:
+        parsed_website = urlparse(website_value)
+        if (
+            parsed_website.scheme.lower() in {"http", "https"}
+            and parsed_website.hostname
+            and parsed_website.username is None
+            and parsed_website.password is None
+        ):
+            website = website_value
+    return FundProfile(
+        asset=asset,
+        name=text("name", "long_name"),
+        issuer=values["issuer"],
+        fund_family=text("fund_family"),
+        objective=values["objective"],
+        benchmark=values["benchmark"],
+        expense_ratio=expense_ratio,
+        assets_under_management=aum,
+        nav=nav,
+        distribution_frequency=values["distribution_frequency"],
+        dividend_yield=dividend_yield,
+        dividend_yield_ttm=dividend_yield_ttm,
+        dividend_rate_ttm=dividend_rate_ttm,
+        replication_method=values["replication_method"],
+        currency=text("currency") or asset.currency,
+        exchange=text("exchange") or asset.exchange,
+        inception_date=_utc_datetime(inception, "inception_date") if inception else None,
+        as_of=_utc_datetime(updated, "fund as_of") if updated else None,
+        provenance=_provenance(raw),
+        freshness=freshness,
+        quality=_quality(
+            has_data=bool(row), warnings=raw.warnings,
+            missing_fields=missing, freshness=freshness,
+        ),
+        website=website,
+        assets_under_management_currency=text(
+            "assets_under_management_currency", "total_assets_currency", "aum_currency",
+        ),
+        nav_currency=text("nav_currency"),
+        description=text("description"),
+        sponsor=text("sponsor"),
+        trustee=text("trustee"),
+        investment_geography=text("investment_geography"),
+        assets_under_management_as_of=(
+            _utc_datetime(row["assets_under_management_as_of"], "fund assets as_of")
+            if row.get("assets_under_management_as_of") else None
+        ),
+        nav_as_of=_utc_datetime(row["nav_as_of"], "fund NAV as_of") if row.get("nav_as_of") else None,
+        distribution_yield=_decimal(row.get("distribution_yield"), "distribution_yield"),
+        distribution_yield_as_of=(
+            _utc_datetime(row["distribution_yield_as_of"], "fund distribution yield as_of")
+            if row.get("distribution_yield_as_of") else None
+        ),
     )
 
 
@@ -336,6 +452,7 @@ def normalize_fundamentals(
                     fiscal_quarter=fiscal_quarter,
                     reported_at=_utc_datetime(row["reported_date"], "reported_date") if row.get("reported_date") else None,
                     native_fields=native,
+                    currency=str(row["currency"]).strip() if row.get("currency") else None,
                 )
             )
     for _, values in latest_values.values():
@@ -554,18 +671,53 @@ def normalize_crypto(
     raw: ResearchData,
     asset: AssetIdentity,
     *,
+    market_raw: ResearchData | None = None,
     interval: str | None = None,
     policy: FreshnessPolicy | None = None,
     now: datetime | None = None,
 ) -> CryptoMarketData:
     price_history = normalize_price_data(raw, asset, interval=interval, policy=policy, now=now)
+    if market_raw is not None and market_raw.category != "crypto_info":
+        raise NormalizationError(f"Expected crypto_info data, got {market_raw.category}")
+    row = market_raw.data[0] if market_raw and market_raw.data else {}
+    market_cap = _decimal(_first_value(row, ("market_cap", "marketCap")), "market_cap")
+    circulating_supply = _decimal(_first_value(row, ("circulating_supply", "circulatingSupply")), "circulating_supply")
+    total_supply = _decimal(_first_value(row, ("total_supply", "totalSupply")), "total_supply")
+    max_supply = _decimal(_first_value(row, ("max_supply", "maxSupply")), "max_supply")
+    missing = tuple(
+        field for field, value in (
+            ("market_cap", market_cap), ("circulating_supply", circulating_supply),
+            ("total_supply", total_supply), ("max_supply", max_supply),
+        ) if value is None
+    )
+    freshness = (
+        policy or FreshnessPolicy()
+    ).status_for("crypto_info", market_raw.retrieved_at, now=now) if market_raw else price_history.freshness
+    freshness = FreshnessStatus.STALE if FreshnessStatus.STALE in (freshness, price_history.freshness) else freshness
+    base_quality = price_history.quality
+    warnings = list(base_quality.warnings)
+    if market_raw is not None:
+        warnings.extend(market_raw.warnings)
+    else:
+        warnings.append("Yahoo crypto market information was unavailable.")
+    status = base_quality.status
+    if any(value is None for value in (market_cap, circulating_supply, total_supply)) and status in {QualityStatus.COMPLETE, QualityStatus.PARTIAL}:
+        status = QualityStatus.PARTIAL
     return CryptoMarketData(
         asset=asset,
         price_history=price_history,
-        market_cap=None,
-        circulating_supply=None,
-        total_supply=None,
-        provenance=price_history.provenance,
-        freshness=price_history.freshness,
-        quality=price_history.quality,
+        market_cap=market_cap,
+        circulating_supply=circulating_supply,
+        total_supply=total_supply,
+        provenance=_provenance(market_raw) if market_raw else price_history.provenance,
+        freshness=freshness,
+        quality=DataQuality(
+            status,
+            base_quality.availability,
+            tuple(warnings),
+            tuple(base_quality.missing_fields) + missing,
+        ),
+        max_supply=max_supply,
+        currency=str(row["currency"]).strip() if row.get("currency") else None,
+        market_cap_currency=str(row["currency"]).strip() if market_cap is not None and row.get("currency") else None,
     )

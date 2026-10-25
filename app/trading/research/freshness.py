@@ -24,6 +24,10 @@ class FreshnessPolicy:
         "company_filings": timedelta(days=1),
         "estimates_consensus": timedelta(days=1),
         "fundamental_metrics": timedelta(days=1),
+        "etf_info": timedelta(days=1),
+        "fund_composition": timedelta(days=1),
+        "issuer_fund_data": timedelta(days=1),
+        "crypto_info": timedelta(days=1),
         "macro_series": timedelta(days=35),
     })
 

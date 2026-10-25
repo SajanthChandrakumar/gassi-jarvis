@@ -16,6 +16,7 @@ from app.trading.research.normalizers import (
     NormalizationError,
     identity_from_profile,
     normalize_fundamentals,
+    normalize_fund_profile,
     normalize_macro,
     normalize_price_data,
 )
@@ -68,7 +69,7 @@ def test_price_normalization_rejects_ambiguous_timestamps_and_represents_empty_d
 def test_identity_and_fundamentals_are_provider_agnostic_with_period_semantics():
     profile = _raw("company_profile", [{"symbol": "nvda", "name": "NVIDIA", "issue_type": "EQUITY", "stock_exchange": "NMS", "currency": "USD", "cik": "1045810"}])
     identity = identity_from_profile(profile)
-    annual = _raw("income_statement", [{"period_ending": "2025-01-31", "fiscal_period": "FY", "fiscal_year": 2025, "total_revenue": 100, "operating_income": 25, "net_income": 20}])
+    annual = _raw("income_statement", [{"period_ending": "2025-01-31", "fiscal_period": "FY", "fiscal_year": 2025, "currency": "USD", "total_revenue": 100, "operating_income": 25, "net_income": 20}])
     quarterly = _raw("income_statement", [{"period_ending": "2025-04-30", "fiscal_period": "Q1", "fiscal_year": 2026, "total_revenue": 30, "operating_income": None, "net_income": 5}])
 
     fundamentals = normalize_fundamentals((("income", annual), ("income", quarterly)), identity, now=NOW)
@@ -77,6 +78,7 @@ def test_identity_and_fundamentals_are_provider_agnostic_with_period_semantics()
     assert identity.provider_identifiers == (("cik", "1045810"),)
     assert [statement.period.value for statement in fundamentals.statements] == ["annual", "quarterly"]
     assert dict(fundamentals.statements[0].values)["revenue"] == Decimal("100")
+    assert fundamentals.statements[0].currency == "USD"
     assert dict(fundamentals.statements[1].values)["operating_income"] is None
     assert fundamentals.quality.status is QualityStatus.PARTIAL
 
@@ -271,8 +273,22 @@ class FakeResearchClient:
     def get_company_profile(self, symbol, *, provider=None):
         return _raw("company_profile", [{"symbol": symbol, "name": "NVIDIA", "issue_type": "EQUITY", "currency": "USD"}], provider=provider or "fake")
 
+    def get_fund_info(self, symbol, *, provider=None):
+        return _raw("etf_info", [{
+            "symbol": symbol, "name": "Index Fund", "fund_family": "Example Funds",
+            "description": "Tracks a broad market index.", "currency": "USD",
+            "total_assets": 1000000, "nav_price": 100, "dividend_yield_ttm": 1.5,
+            "updated": "2026-08-15",
+        }], provider=provider or "yfinance", symbol=symbol)
+
     def get_price_history(self, symbol, **kwargs):
         return _raw("price_history", [{"date": "2026-08-01", "open": 1, "high": 2, "low": 1, "close": 2, "volume": 10}], provider=kwargs.get("provider") or "fake", symbol=symbol)
+
+    def get_crypto_info(self, symbol, *, provider=None):
+        return _raw("crypto_info", [{
+            "currency": "USD", "market_cap": "1000000", "circulating_supply": "20",
+            "total_supply": "21", "max_supply": "21",
+        }], provider=provider or "yfinance", symbol=symbol, asset_type="crypto")
 
     def get_equity_quote(self, symbol, **kwargs):
         return _raw("equity_quote", [{
@@ -325,6 +341,19 @@ class FakeResearchClient:
         }], provider=provider or "fmp", symbol=symbol, start_date=str(start_date), end_date=str(end_date))
 
 
+def test_profile_enrichment_preserves_selected_exchange_and_currency_when_provider_omits_them():
+    class SparseProfileClient(FakeResearchClient):
+        def get_company_profile(self, symbol, *, provider=None):
+            return _raw("company_profile", [{"symbol": symbol, "name": "NVIDIA"}], provider="yfinance", symbol=symbol)
+
+    result = CanonicalResearchService(SparseProfileClient()).get_asset_research_data(
+        "NVDA", exchange="NASDAQ", currency="USD", sections=("profile",), now=NOW,
+    )
+
+    assert result.asset.exchange == "NASDAQ"
+    assert result.asset.currency == "USD"
+
+
 def test_aggregate_keeps_successful_sections_when_one_optional_fetch_fails():
     service = CanonicalResearchService(FakeResearchClient())
 
@@ -337,6 +366,19 @@ def test_aggregate_keeps_successful_sections_when_one_optional_fetch_fails():
     assert aggregate.failures[0].code == "provider_error"
 
 
+def test_crypto_aggregate_normalizes_yahoo_market_data_and_observed_currency():
+    aggregate = CanonicalResearchService(FakeResearchClient()).get_asset_research_data(
+        "BTC", asset_type="crypto", sections=("prices",), now=NOW,
+    )
+
+    assert aggregate.crypto.market_cap == Decimal("1000000")
+    assert aggregate.crypto.circulating_supply == Decimal("20")
+    assert aggregate.crypto.total_supply == Decimal("21")
+    assert aggregate.crypto.max_supply == Decimal("21")
+    assert aggregate.crypto.market_cap_currency == "USD"
+    assert aggregate.crypto.provenance.provider == "yfinance"
+
+
 def test_asset_aggregate_includes_requested_company_news():
     aggregate = CanonicalResearchService(FakeResearchClient()).get_asset_research_data(
         "NVDA", sections=("news",), now=NOW,
@@ -346,6 +388,61 @@ def test_asset_aggregate_includes_requested_company_news():
     assert aggregate.news.articles[0].title == "NVIDIA publishes quarterly results"
     assert aggregate.news.provenance.provider == "yfinance"
     assert len(aggregate.news.articles) == 1
+
+
+def test_etf_aggregate_preserves_identity_and_normalizes_free_fund_information():
+    aggregate = CanonicalResearchService(FakeResearchClient()).get_asset_research_data(
+        "SPY", asset_type="etf", exchange="NYSE Arca", currency="USD",
+        sections=("prices", "fund"), now=NOW,
+    )
+
+    assert aggregate.asset.asset_type is CanonicalAssetType.ETF
+    assert aggregate.asset.exchange == "NYSE Arca"
+    assert aggregate.asset.currency == "USD"
+    assert aggregate.fund_profile.name == "Index Fund"
+    assert aggregate.fund_profile.assets_under_management == Decimal("1000000")
+    assert aggregate.fund_profile.dividend_yield_ttm == Decimal("1.5")
+    assert aggregate.fund_profile.provenance.provider == "yfinance"
+    assert aggregate.prices.asset.asset_type is CanonicalAssetType.ETF
+
+
+def test_etf_info_freshness_expires_after_one_day():
+    policy = FreshnessPolicy()
+
+    assert policy.status_for("etf_info", NOW, now=NOW) is FreshnessStatus.FRESH
+    assert policy.status_for("etf_info", NOW, now=NOW + timedelta(days=2)) is FreshnessStatus.STALE
+
+
+def test_fund_profile_normalization_keeps_unreported_fee_and_benchmark_missing():
+    raw = _raw("etf_info", [{"symbol": "SPY", "total_assets": "0", "currency": "USD", "website": "https://example.com/fund", "description": "Tracks a broad US equity index."}], provider="yfinance", symbol="SPY")
+
+    fund = normalize_fund_profile(raw, AssetIdentity("SPY", CanonicalAssetType.ETF, currency="USD"), now=NOW)
+
+    assert fund.assets_under_management == Decimal("0")
+    assert fund.expense_ratio is None
+    assert fund.benchmark is None
+    assert fund.website == "https://example.com/fund"
+    assert fund.objective is None
+    assert fund.description == "Tracks a broad US equity index."
+    assert fund.assets_under_management_currency is None
+    assert fund.nav_currency is None
+    assert {"expense_ratio", "benchmark", "objective"}.issubset(fund.quality.missing_fields)
+
+
+def test_yahoo_net_expense_ratio_percentage_points_normalize_to_fraction():
+    raw = _raw("etf_info", [{"symbol": "SPY", "net_expense_ratio_percent": "0.0945"}], provider="yfinance", symbol="SPY")
+
+    fund = normalize_fund_profile(raw, AssetIdentity("SPY", CanonicalAssetType.ETF), now=NOW)
+
+    assert fund.expense_ratio == Decimal("0.000945")
+
+
+def test_fund_profile_drops_non_http_provider_website():
+    raw = _raw("etf_info", [{"symbol": "SPY", "website": "javascript:alert(1)"}], provider="yfinance", symbol="SPY")
+
+    fund = normalize_fund_profile(raw, AssetIdentity("SPY", CanonicalAssetType.ETF), now=NOW)
+
+    assert fund.website is None
 
 
 def test_asset_aggregate_includes_recent_filings():

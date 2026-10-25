@@ -78,6 +78,11 @@ class StatisticalResearchService:
     def prepare_returns(self, prices: PriceSeries, *, return_type: ReturnType = ReturnType.SIMPLE) -> StatisticalSeries:
         """Calculate adjacent-observation returns without forward filling gaps."""
         warnings = list(prices.quality.warnings)
+        warnings.append("Returns use provider close prices; dividend and split adjustments are not verified, so this is not a verified total return.")
+        if prices.currency:
+            warnings.append(f"Returns are measured in the source currency {prices.currency}; no currency conversion was applied.")
+        else:
+            warnings.append("The source price currency is unknown; no currency conversion was applied.")
         seen: set[datetime] = set()
         closes: list[tuple[datetime, Decimal]] = []
         for bar in prices.bars:
@@ -289,6 +294,9 @@ class StatisticalResearchService:
         frames = [pd.Series([float(item.value) for item in current.points], index=pd.DatetimeIndex([item.timestamp for item in current.points]), name=index) for index, current in enumerate(series)]
         aligned = pd.concat(frames, axis=1, join="inner").dropna()
         warnings = [warning for current in series for warning in current.warnings]
+        currencies = sorted({current.asset.currency for current in series if current.asset.currency})
+        if len(currencies) > 1:
+            warnings.append(f"Comparison uses different source currencies ({', '.join(currencies)}); no currency conversion was applied.")
         smallest = min(len(current.points) for current in series)
         if smallest and Decimal("1") - (Decimal(len(aligned)) / Decimal(smallest)) >= self.policy.material_alignment_loss:
             warnings.append(f"Timestamp intersection removed material observations ({len(aligned)} retained from smallest input of {smallest}); no forward fill was applied.")

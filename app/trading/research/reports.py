@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .fund_composition import FundComposition
 
 from .canonical import (
     AssetIdentity,
@@ -13,6 +17,8 @@ from .canonical import (
     CompanyFiling,
     DataQuality,
     EarningsObservation,
+    FinancialStatement,
+    FundProfile,
     FreshnessStatus,
     NewsArticle,
     ProviderAttempt,
@@ -44,6 +50,7 @@ class ReportMetric:
     previous_value: Decimal | None = None
     unit: str | None = None
     finding_id: str | None = None
+    period: str | None = None
 
     def __post_init__(self) -> None:
         if not self.key:
@@ -58,6 +65,7 @@ class ReportSection:
     metrics: tuple[ReportMetric, ...] = ()
     warnings: tuple[str, ...] = ()
     provenance: tuple[ResearchProvenance, ...] = ()
+    details: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.key or not self.title:
@@ -66,6 +74,7 @@ class ReportSection:
         object.__setattr__(self, "metrics", tuple(sorted(self.metrics, key=lambda item: item.key)))
         object.__setattr__(self, "warnings", tuple(sorted(set(self.warnings))))
         object.__setattr__(self, "provenance", tuple(sorted(self.provenance, key=lambda item: (item.provider or "", item.source_category, item.retrieved_at))))
+        object.__setattr__(self, "details", tuple(sorted((str(key), str(value)) for key, value in self.details)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +108,7 @@ class ReportDataCoverage:
     warnings: tuple[str, ...] = ()
     missing_fields: tuple[str, ...] = ()
     failures: tuple[SectionFailure, ...] = ()
+    reference_url: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "warnings", tuple(sorted(set(self.warnings))))
@@ -160,6 +170,12 @@ class AssetResearchReport:
     filings: tuple[CompanyFiling, ...] = ()
     warnings: tuple[str, ...] = ()
     price_history_total: int | None = None
+    is_partial: bool = False
+    missing_essentials: tuple[str, ...] = ()
+    financial_history: tuple[FinancialStatement, ...] = ()
+    fund_composition: FundComposition | None = None
+    price_as_of: datetime | None = None
+    fund_profile_secondary: FundProfile | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "sections", tuple(self.sections))
@@ -174,8 +190,12 @@ class AssetResearchReport:
         object.__setattr__(self, "earnings", tuple(self.earnings))
         object.__setattr__(self, "news", tuple(self.news))
         object.__setattr__(self, "filings", tuple(self.filings))
+        object.__setattr__(self, "missing_essentials", tuple(sorted(set(self.missing_essentials))))
+        object.__setattr__(self, "financial_history", tuple(self.financial_history))
         if self.as_of is not None:
             object.__setattr__(self, "as_of", _utc(self.as_of, "as_of"))
         if self.generated_at is not None:
             object.__setattr__(self, "generated_at", _utc(self.generated_at, "generated_at"))
+        if self.price_as_of is not None:
+            object.__setattr__(self, "price_as_of", _utc(self.price_as_of, "price_as_of"))
         object.__setattr__(self, "warnings", tuple(sorted(set(self.warnings))))
