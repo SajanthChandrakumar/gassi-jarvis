@@ -8,7 +8,7 @@ Each session stores:
     - history:              Conversation turn history (list of dicts).
     - pending_command:      A shell command awaiting user approval (or None).
 
-Also wraps the ChromaDB vector store for persistent long-term memory (RAG).
+Also wraps the embedded SQLite store for persistent semantic memory (RAG).
 """
 
 import json
@@ -19,25 +19,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import chromadb
-from chromadb.config import Settings
+from app.memory_store import MemoryStore
 
 log = logging.getLogger(__name__)
 
-# ─── ChromaDB Long-Term Memory (Persistent) ───────────────────────────────────
+# ─── Local Long-Term Memory (Persistent) ─────────────────────────────────────
 
 # Anchored to the project root (not the process CWD) so the same brain is
 # loaded no matter where uvicorn is launched from. Override via JARVIS_BRAIN_DIR.
 _DEFAULT_BRAIN_DIR = Path(__file__).resolve().parent.parent / "jarvis_brain"
 BRAIN_DIR = os.environ.get("JARVIS_BRAIN_DIR", str(_DEFAULT_BRAIN_DIR))
 
-# Keep memory embedded even when CHROMA_API_IMPL is set in the environment.
-# Chroma's HTTP server has unpatched code-execution advisories (CVE-2026-45829).
-chroma_client = chromadb.PersistentClient(
-    path=BRAIN_DIR,
-    settings=Settings(chroma_api_impl="chromadb.api.rust.RustBindingsAPI"),
-)
-collection = chroma_client.get_or_create_collection(name="long_term_memory")
+collection = MemoryStore(BRAIN_DIR)
 
 
 def save_memory(text: str) -> str:
@@ -106,7 +99,7 @@ def get_recent_memories(n: int = 5) -> list[dict]:
     """
     Die n zuletzt gespeicherten Fakten, neueste zuerst.
 
-    Reine lokale ChromaDB-Abfrage (kein Gemini-Call) — gedacht für externe
+    Reine lokale SQLite-Abfrage (kein Gemini-Call) — gedacht für externe
     Dashboards (z.B. Homepage Custom-API-Widget), die nur einen Blick auf
     zuletzt Gemerktes werfen wollen, ohne eine LLM-Anfrage auszulösen.
     """

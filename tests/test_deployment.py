@@ -33,7 +33,10 @@ def test_cloud_and_device_requirements_keep_runtime_pins_and_split_mac_dependenc
     assert "openbb-core==1.6.13" in cloud
     assert "Pillow" not in cloud
     assert "pydantic==2.13.3" in device
-    assert "Pillow==12.2.0" in device
+    assert "Pillow==13.0.0" in device
+    assert "Pillow==13.0.0" in _text("requirements.txt")
+    assert "certifi==2026.10.23" in cloud
+    assert "certifi==2026.10.23" in _text("requirements.txt")
 
 
 def test_cloud_dockerfile_is_unprivileged_and_installs_cloud_requirements():

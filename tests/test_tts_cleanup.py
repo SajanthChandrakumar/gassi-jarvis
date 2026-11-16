@@ -11,7 +11,7 @@ Run from the project root:
 import os
 import tempfile
 
-# Isolate brain/sessions before importing app.main (it initialises ChromaDB and
+# Isolate brain/sessions before importing app.main (it initialises memory and
 # loads the session store at import time).
 os.environ.setdefault("JARVIS_BRAIN_DIR", tempfile.mkdtemp(prefix="jarvis_tts_brain_"))
 os.environ.setdefault(
