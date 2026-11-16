@@ -10,7 +10,7 @@ calendar writes remain Human-in-the-Loop (HitL) gated.
 ## Capabilities
 
 - Browser speech input and optional German Edge-TTS responses.
-- Multi-turn sessions, persistent ChromaDB memory, and read-only Google Search
+- Multi-turn sessions, persistent SQLite semantic memory, and read-only Google Search
   grounding for ordinary assistant questions.
 - macOS screen analysis, allowlisted app activation, and shell actions through
   the outbound agent's local classifier and HitL boundary.
@@ -56,7 +56,7 @@ can lag the agencies' latest releases.
 ```text
 Frontend / PWA
   └─ HTTPS + JARVIS_API_TOKEN ──> Cloud FastAPI
-                                  ├─ Gemini, sessions, ChromaDB memory
+                                  ├─ Gemini, sessions, SQLite semantic memory
                                   ├─ Google Calendar (separate HitL path)
                                   ├─ deterministic read-only research
                                   └─ SQLite device-intent queue
@@ -84,7 +84,7 @@ The frontend has no frontend-to-agent path. See
 
 Key modules are [`app/main.py`](app/main.py) (cloud gateway),
 [`app/agent.py`](app/agent.py) (Gemini orchestration),
-[`app/memory.py`](app/memory.py) (sessions/ChromaDB),
+[`app/memory.py`](app/memory.py) (sessions/SQLite memory),
 [`app/models.py`](app/models.py) (API contracts),
 [`app/security.py`](app/security.py) (local shell classifier),
 [`app/vision.py`](app/vision.py) (local screenshot capture), and
@@ -92,7 +92,7 @@ Key modules are [`app/main.py`](app/main.py) (cloud gateway),
 
 ## What is cloud-safe
 
-The cloud can serve chat, voice/TTS, session and ChromaDB memory, Google
+The cloud can serve chat, voice/TTS, session and SQLite semantic memory, Google
 Calendar, and the bounded financial-research endpoints while the Mac is
 offline. Research is read-only and deterministic: Gemini may present results,
 but does not calculate authoritative values, fill missing data, recommend

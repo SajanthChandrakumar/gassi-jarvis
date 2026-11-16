@@ -3,7 +3,7 @@
 ## Scope and trust boundary
 
 Trading is a bounded module of Jarvis. Conversation history, Gemini output,
-ChromaDB memory, and `jarvis_sessions.json` may help explain or collect input,
+Personal memory, and `jarvis_sessions.json` may help explain or collect input,
 but are never financial source of truth. They must not determine trades,
 balances, positions, cashflows, P&L, or portfolio state.
 
@@ -97,4 +97,4 @@ Domain logic -> FinancialEventRepository -> persistence implementation
 No persistence implementation is selected or created in Phase 0.5. Phase 1
 may choose an independent ledger store (SQLite is a reasonable candidate) only
 after defining transaction semantics, uniqueness constraints, backups, and
-reconciliation needs. It must remain separate from ChromaDB and session JSON.
+reconciliation needs. It must remain separate from personal memory and session JSON.

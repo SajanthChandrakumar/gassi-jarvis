@@ -6,7 +6,9 @@ python-dotenv==1.2.2
 certifi==2026.10.23
 edge-tts==7.2.8
 Pillow==13.0.0
-chromadb==1.5.8
+# Local semantic memory; no Chroma server/runtime dependency.
+onnxruntime==1.32.0
+tokenizers==0.23.3
 slowapi==0.1.9
 google-api-python-client==2.198.0
 google-auth-oauthlib==1.4.0

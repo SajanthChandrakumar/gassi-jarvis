@@ -11,7 +11,7 @@ flowchart LR
     UI["Frontend / PWA"] -->|"HTTPS, JARVIS_API_TOKEN"| API["Cloud FastAPI"]
     subgraph CLOUD["Trust zone 2: cloud"]
       API --> GEMINI["Gemini / TTS"]
-      API --> MEM["ChromaDB memory + sessions"]
+      API --> MEM["SQLite semantic memory + sessions"]
       API --> CAL["Google Calendar"]
       API --> RESEARCH["Deterministic read-only research"]
       API --> QUEUE["SQLite single-device queue"]
@@ -34,16 +34,22 @@ memory, device status, action status, and decisions. It holds only
 
 `app/main.py`, `app/agent.py`, `app/memory.py`, `app/gcal.py`, and
 `app/trading/` run in the cloud image. The cloud owns Gemini orchestration,
-TTS, ChromaDB memory, disk-persistent sessions, Calendar, and deterministic
+TTS, SQLite semantic memory, disk-persistent sessions, Calendar, and deterministic
 financial research. `app/device/cloud.py` stores one configured Mac's action
 intent, decisions, heartbeat, leases, terminal result, and optional text
 analysis. It does not import or execute `app/device/executor.py`,
 `app/security.py`, `app/vision.py`, AppleScript, or launchd. The Docker build
 context excludes those local implementations.
 
+Long-term facts use an embedded SQLite store and local MiniLM semantic ranking.
+The old Chroma dependency/server implementation is absent. A read-only importer
+preserves legacy facts in a separate store with a verified backup and a one-time
+transaction marker. Existing volume paths remain stable; migration and rollback
+details are in [`docs/memory-storage.md`](docs/memory-storage.md).
+
 The cloud is not a financial source of truth. Deterministic research remains
 under `app/trading/` with provenance, freshness, quality, and explicit missing
-or unsupported values. ChromaDB, `jarvis_sessions.json`, and LLM history are
+or unsupported values. Memory storage, `jarvis_sessions.json`, and LLM history are
 not financial state. Gemini may orchestrate or present the structured output,
 but cannot calculate authoritative values, recommend trades, or execute
 orders. Calendar remains cloud-side; event creation uses its existing separate

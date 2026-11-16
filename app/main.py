@@ -11,7 +11,7 @@ It orchestrates the full request lifecycle:
 
 All business logic is delegated to the respective microservice modules:
     - models.py   → Pydantic validation
-    - memory.py   → Session state + ChromaDB
+    - memory.py   → Session state + SQLite memory
     - agent.py    → Gemini LLM + tool declarations
     - device/    → Local Mac capability boundary
 """
@@ -447,7 +447,7 @@ async def get_service_worker():
 async def recent_memories(request: Request) -> RecentMemoriesResponse:
     """
     Zuletzt gemerkte Fakten, LLM-frei — für externe Dashboards (z.B. Homepage
-    Custom-API-Widget). Reiner ChromaDB-Read, kein Gemini-Call, keine
+    Custom-API-Widget). Reiner SQLite-Read, kein Gemini-Call, keine
     Session-/HitL-Beteiligung.
     """
     return RecentMemoriesResponse(memories=get_recent_memories(n=5))

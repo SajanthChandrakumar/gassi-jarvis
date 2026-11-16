@@ -26,9 +26,10 @@ os.environ["JARVIS_SESSIONS_FILE"] = os.path.join(
 import app.memory as memory  # noqa: E402
 
 
-def test_memory_forces_embedded_chroma_backend():
-    # Environment settings must not redirect private memory to a remote API.
-    assert memory.chroma_client.get_settings().chroma_api_impl == "chromadb.api.rust.RustBindingsAPI"
+def test_memory_uses_private_embedded_sqlite_store():
+    from app.memory_store import MemoryStore
+    assert isinstance(memory.collection, MemoryStore)
+    assert memory.collection.path.name == "jarvis_memory.sqlite3"
 
 
 @pytest.fixture(autouse=True)
@@ -227,7 +228,7 @@ class TestTaintTracking:
 class TestRecentMemories:
     @pytest.fixture(autouse=True)
     def clean_collection(self):
-        """Isolate ChromaDB content between tests in this class."""
+        """Isolate persistent memory between tests in this class."""
         existing = memory.collection.get()["ids"]
         if existing:
             memory.collection.delete(ids=existing)

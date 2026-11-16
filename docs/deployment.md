@@ -12,7 +12,7 @@ The three zones are:
 - **Frontend:** vanilla PWA on the cloud root or a separate static host. It
   uses only `JARVIS_API_TOKEN` and calls FastAPI through the configured API
   origin.
-- **Cloud:** FastAPI, Gemini, ChromaDB memory, sessions, Google Calendar,
+- **Cloud:** FastAPI, Gemini, SQLite semantic memory, sessions, Google Calendar,
   deterministic read-only research, and the SQLite device queue. It contains
   no Mac executor, shell classifier, screenshot, AppleScript, or launchd
   implementation in the cloud image.
@@ -50,6 +50,13 @@ persists three named volumes:
 - `jarvis_chroma` → `/data/chroma` (`JARVIS_BRAIN_DIR`)
 - `jarvis_sessions` → `/data/sessions` (`JARVIS_SESSIONS_FILE`)
 - `jarvis_device` → `/data/device` (`JARVIS_CLOUD_DB_PATH`)
+
+The memory volume name/path are retained for compatibility. Its active store
+is now `jarvis_memory.sqlite3`; the Chroma runtime dependency has been removed.
+Read [memory migration and recovery](memory-storage.md) before updating an
+existing volume: stop the old writer, verify a volume backup and validate the
+update on a copy. Startup creates a verified legacy snapshot and imports facts
+once, retaining the original Chroma archive.
 
 The image runs as the unprivileged `jarvis` user. Its Docker build context
 excludes `app/device/agent.py`, `app/device/executor.py`,

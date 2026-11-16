@@ -22,7 +22,6 @@ def setup_logging() -> None:
     )
 
     # Quiet down noisy third-party libs.
-    logging.getLogger("chromadb").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     # We deliberately run mixed manual + callable tools, which disables the
