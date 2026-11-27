@@ -3,7 +3,7 @@
 ## Boundary
 
 `app.trading.research.OpenBBResearchClient` is Jarvis' only Phase-1 boundary
-to OpenBB. `main.py`, `agent.py`, ChromaDB, session state, and Gemini do not
+to OpenBB. `main.py`, `agent.py`, personal memory, session state, and Gemini do not
 fetch, validate, or interpret financial provider data. Each call returns
 `ResearchData`: requested symbol, asset type, category, supplying provider,
 UTC retrieval time, requested date range, raw rows, sanitized provider warnings,
@@ -83,7 +83,7 @@ Each endpoint uses the bounded chain above. Optional credentials enable:
 Yahoo Finance, SEC, EconDB, and the Swiss SNB Fetcher do not need Jarvis-managed API keys. The adapter
 also accepts an explicit per-call provider override for a supported installed
 provider; `JARVIS_OPENBB_*_PROVIDER` environment overrides are not implemented.
-Credentials never belong in repository files, ChromaDB, sessions, or the
+Credentials never belong in repository files, personal memory, sessions, or the
 financial ledger.
 
 For an existing local virtual environment, installing the new requirements
